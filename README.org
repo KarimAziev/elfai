@@ -1,0 +1,67 @@
+#+OPTIONS: ^:nil tags:nil num:nil
+
+* About
+
+=elfai= is an Emacs package that provides an interface to OpenAI's GPT models. 
+
+#+begin_quote
+[!WARNING]
+
+This project is currently under development.
+#+end_quote
+
+
+* Table of Contents                                       :TOC_2_gh:QUOTE:
+#+BEGIN_QUOTE
+- [[#about][About]]
+- [[#requirements][Requirements]]
+- [[#installation][Installation]]
+  - [[#with-use-package-and-straightel][With use-package and straight.el]]
+  - [[#manual-installation][Manual installation]]
+- [[#usage][Usage]]
+#+END_QUOTE
+
+* Requirements
+
+| Name  | Version |
+|-------+---------|
+| Emacs |    27.1 |
+
+
+* Installation
+
+** With use-package and straight.el
+#+begin_src elisp :eval no
+(use-package elfai
+  :straight (elfai
+             :repo "KarimAziev/elfai"
+             :type git
+             :host github)
+  :commands (elfai-recognize-image
+             elfai-generate-images-batch
+             elfai-create-image
+             elfai-create-image-variation
+             elfai-complete-here
+             elfai-ask-and-insert))
+#+end_src
+
+** Manual installation
+
+Download the source code and put it wherever you like, e.g. into =~/.emacs.d/elfai/=
+
+#+begin_src shell :eval no
+git clone https://github.com/KarimAziev/elfai.git ~/.emacs.d/elfai/
+#+end_src
+
+Add the downloaded directory to the load path:
+
+#+begin_src elisp :eval no
+(add-to-list 'load-path "~/.emacs.d/elfai/")
+(require 'elfai)
+#+end_src
+
+* Usage
+ To use this package, you need to set your OpenAI API key using the =elfai-api-key= custom variable.
+
+The main entry points for interacting with the GPT models are the =elfai-ask-and-insert', =elfai-complete-here', =elfai-create-image=, =elfai-create-image-variation=, =elfai-recognize-image=, and =elfai-set-model= functions. These functions allow you to send prompts to the model, generate images, create variations of images, recognize content in images, and set the model for a given variable.
+
