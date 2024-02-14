@@ -2295,9 +2295,9 @@ Optional argument TEXT is the text to be converted."
        (insert elfai-user-prompt-prefix)
        (save-excursion
          (insert "\n" (if lang
-                          (concat "#+begin_src " lang "\n" text "\n"
-                                  "#+end_src")
-                        "#+begin_example\n" text "\n#+end_example")
+                          (concat (concat "#+begin_src " lang "\n" text "\n"
+                                          "#+end_src"))
+                        (concat "#+begin_example\n" text "\n#+end_example"))
                  "\n\n"))
        (current-buffer))
      '((display-buffer-reuse-window
