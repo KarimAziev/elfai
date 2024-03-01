@@ -774,6 +774,7 @@ Optional argument POSITION is the position in the BUFFER where the response
 should be inserted. It can be a marker or an integer.
 
 Remaining arguments PROPS are additional properties passed as a plist."
+  (require 'json)
   (let* ((buffer (or buffer (current-buffer)))
          (start-marker
           (cond ((not position)
