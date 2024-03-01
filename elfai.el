@@ -74,6 +74,8 @@
 (declare-function url-host "url-parse")
 (declare-function auth-source-search "auth-source")
 
+(require 'transient)
+
 (defcustom elfai-abort-on-keyboard-quit-count 3
   "Number of `keyboard-quit' presses before aborting GPT documentation requests.
 
