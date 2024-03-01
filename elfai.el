@@ -91,6 +91,23 @@ abort action will not be triggered."
   :group 'elfai
   :type 'integer)
 
+(defcustom elfai-complete-prompt (cons "<<$0>>"
+                                       "Directly below is a placeholder '<<$0>>' within a code or text snippet. You are tasked with replacing this placeholder. Only provide the precise code or text that should replace '<<$0>>'. Do not add any extra formatting, annotations, don't wrap it in ```.")
+  "Placeholder and instructions for code/text snippet replacement.
+
+Specifies the placeholder and instructions for completing prompts in code or
+text snippets.
+
+The value is a cons cell where the car is a string representing the placeholder
+to be replaced, and the cdr is a string providing instructions for the
+replacement.
+
+The default placeholder is \"<<$0>>\". The instructions direct to replace the
+placeholder with the exact code or text needed, without any extra formatting or
+annotations."
+  :group 'elfai
+  :type '(cons string string))
+
 (defcustom elfai-debug nil
   "Whether to enable debugging in the GPT documentation group."
   :group 'elfai
@@ -112,7 +129,7 @@ key (more secure)."
   :group 'elfai
   :type 'string)
 
-(defcustom elfai-gpt-model "gpt-4-1106-preview"
+(defcustom elfai-gpt-model "gpt-4-turbo-preview"
   "A string variable representing the API model for OpenAI."
   :group 'elfai
   :type 'string)
@@ -217,6 +234,46 @@ formatting issues."
            :value 0.2))
   :group 'elfai)
 
+(defcustom elfai-system-prompts '(""
+                                  "Rewrite this function")
+  "List of predefined system prompts.
+
+A list of system prompts used to guide the generation of commit messages with
+the help of a GPT model. Each prompt is a string that instructs the GPT model on
+how to process the `git diff --cached` output and any partial commit message
+provided by the user to create a complete and conventional commit message.
+
+Each prompt should be crafted to provide clear and concise instructions to the
+GPT model, ensuring that the generated commit message is relevant and adheres to
+conventional commit standards. The prompts should not include any extraneous
+information and should be formatted to fit within a 70-character width limit.
+
+To use these prompts, select one from the list as the active prompt when
+invoking the commit message generation function. The selected prompt will be
+sent to the GPT model along with the `git diff --cached` output and any
+user-provided commit message fragment to generate a complete commit message."
+  :type '(repeat string)
+  :group 'gpt-commit)
+
+;; (defcustom elfai-system-prompt ""
+;;   "Default system prompt for ElfAI operations.
+
+;; Specifies the system prompt used by the elfai interface.
+
+;; The value should be a string that represents the prompt to be displayed to the
+;; user. This prompt can be customized to provide a unique or context-specific
+;; prompt for different interactions within the elfai system.
+
+;; The default value is an empty string, which means no prompt will be displayed
+;; unless explicitly set.
+
+;; To change the prompt, assign a new string value to this variable. This can
+;; enhance the user experience by providing clearer instructions or information
+;; relevant to the current context."
+;;   :type 'string
+;;   :local 'permanent
+;;   :group 'elfai)
+
 (defconst elfai-props-indicator '(elfai response rear-nonsticky t))
 
 (defcustom elfai--stream-after-insert-hook nil
@@ -239,15 +296,17 @@ content updates."
   :group 'elfai
   :type 'hook)
 
+(defvar-local elfai-curr-prompt-idx 0)
+
 (defvar elfai--request-url-buffers nil
   "Alist of active request buffers requests.")
 
 (defvar elfai--debug-data-raw nil
   "Stores raw data for debugging purposes.")
 
-(defvar-local elfai--system-message "")
+;; (defvar-local elfai-system-prompt "")
 
-(put 'elfai--system-message 'safe-local-variable #'always)
+;; (put 'elfai-system-prompt 'safe-local-variable #'always)
 
 (defvar auth-sources)
 
@@ -677,6 +736,27 @@ Argument INFO is a property list containing various request-related data."
           (plist-put plist-a prop-name val)))))
   plist-a)
 
+(defun elfai--plist-pick (props plist)
+  "Pick PROPS from PLIST."
+  (let ((result '()))
+    (dolist (prop props result)
+      (when (plist-member plist prop)
+        (setq result (plist-put result prop (plist-get plist prop)))))))
+
+(defun elfai--plist-omit (keys plist)
+  "Remove specified KEYS from PLIST and return the result.
+
+Argument KEYS is a list of keys to omit from PLIST.
+
+Argument PLIST is the property list from which KEYS are omitted."
+  (let (result)
+    (dotimes (idx (length plist))
+      (when (eq (logand idx 1) 0)
+        (let ((key (nth idx plist)))
+          (unless (member key keys)
+            (setq result (plist-put result key (nth (1+ idx) plist)))))))
+    result))
+
 (defun elfai--stream-request (request-data &optional final-callback buffer
                                            position &rest props)
   "Send a POST request with JSON data and handle the response.
@@ -791,16 +871,26 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                                 ""))
                                     (:role "user"
                                      :content ,user-prompt)))))
-    (apply #'elfai--stream-request (list
-                                    :messages messages
-                                    :model elfai-gpt-model
-                                    :temperature elfai-gpt-temperature
-                                    :stream t)
+    (apply #'elfai--stream-request
+           (elfai--plist-merge (list
+                                :messages messages
+                                :model elfai-gpt-model
+                                :temperature
+                                elfai-gpt-temperature
+                                :stream t)
+                               (elfai--plist-pick
+                                '(:model
+                                  :temperature)
+                                props))
            final-callback buffer
            position
-           props)))
+           (elfai--plist-omit
+            '(:model
+              :temperature)
+            props))))
 
-(defvar-local elfai--bus nil)
+(defvar-local elfai--bus nil
+  "Local variable holding the event bus instance.")
 
 (defun elfai-command-watcher ()
   "Monitor `keyboard-quit' commands and handle GPT documentation aborts."
@@ -821,42 +911,49 @@ Remaining arguments PROPS are additional properties passed as a plist."
 
 ;;;###autoload
 (defun elfai-ask-and-insert (str)
-  "Insert user-prompted string into buffer via GPT request.
+  "Prompt user for input and send it to GPT for processing.
 
-Argument STR is a string representing the user's part of the conversation."
+Argument STR is a string to be inserted."
   (interactive (list (read-string "Ask: ")))
   (elfai-stream nil str))
 
-;;;###autoload
-(defun elfai-complete-here (&optional ask-description)
-  "Insert code at point using GPT completion.
 
-Optional argument ASK-DESCRIPTION is a boolean; when non-nil, it prompts the
-user for a description."
+;;;###autoload
+(defun elfai-complete-here (&optional partial-content)
+  "Replace placeholder text in a buffer with GPT-generated content.
+
+Optional argument PARTIAL-CONTENT is a boolean indicating whether to use only
+the part of the buffer before the point."
   (interactive "P")
-  (let*
-      ((pos (point))
-       (inside-comment (nth 4 (syntax-ppss pos)))
-       (delimiter
-        (when inside-comment comment-start))
-       (orig-content (buffer-substring-no-properties (point-min)
-                                                     (point-max)))
-       (gpt-content (with-temp-buffer
-                      (insert orig-content)
-                      (goto-char pos)
-                      (when ask-description
-                        (apply #'insert
-                               (delq nil
-                                     (list delimiter
-                                           (if delimiter " "
-                                             "")
-                                           (read-string "Ask: ")))))
-                      (insert "$0")
-                      (buffer-substring-no-properties (point-min)
-                                                      (point-max))))
-       (prompt
-        "Given the following code snippet with a placeholder ('$0') representing where you need to insert your code, complete the code snippet appropriately based on the coding context or task described. Your response should strictly be the code that directly replaces '$0', without additional comments or explanations. "))
+  (let* ((pos (point))
+         (placeholder (car elfai-complete-prompt))
+         (orig-content (buffer-substring-no-properties (point-min)
+                                                       (if partial-content
+                                                           pos
+                                                         (point-max))))
+         (gpt-content (with-temp-buffer
+                        (insert (replace-regexp-in-string
+                                 (regexp-quote placeholder)
+                                 (make-string
+                                  (length
+                                   placeholder)
+                                  ?\*)
+                                 orig-content))
+                        (goto-char pos)
+                        (insert placeholder)
+                        (buffer-substring-no-properties (point-min)
+                                                        (point-max))))
+         (prompt
+          (cdr elfai-complete-prompt)))
+    (when elfai-debug
+      (print gpt-content))
     (elfai-stream prompt gpt-content)))
+
+;;;###autoload
+(defun elfai-complete-with-partial-context ()
+  "Invoke GPT completion with partial buffer context."
+  (interactive)
+  (elfai-complete-here t))
 
 (defun elfai--format-plural (count singular-str)
   "Format COUNT with SINGULAR-STR, adding \"s\" for plural.
@@ -1984,16 +2081,26 @@ saving."
   value)
 
 ;;;###autoload
-(defun elfai-set-model (model variable)
+(defun elfai-set-model (variable model)
   "Set a GPT MODEL for a given VARIABLE with user input.
 
 Argument MODEL is the name of the GPT model to set.
 
 Argument VARIABLE is the name of the Emacs variable to associate with the GPT
 model."
-  (interactive (list (elfai--completing-read-model "Model: ")
-                     (elfai--read-gpt-model-variable "Variable: ")))
+  (interactive (list
+                (elfai--read-gpt-model-variable "Variable: ")
+                (elfai--completing-read-model "Model: ")))
   (elfai-set-or-save-variable (intern-soft variable) model))
+
+;;;###autoload
+(defun elfai-change-default-model (model)
+  "Set the default MODEL for elfai to MODEL.
+
+Argument MODEL is the name of the GPT model to set."
+  (interactive (list
+                (elfai--completing-read-model "Model: ")))
+  (elfai-set-model 'elfai-gpt-model model))
 
 
 (defun elfai-get-region ()
@@ -2055,7 +2162,8 @@ Argument CONTENT is the text to be normalized."
          prompts)))
     (setq result (cons (list
                         :role "system"
-                        :content elfai--system-message)
+                        :content (or (elfai-system-prompt)
+                                     ""))
                        prompts))
     (when elfai-debug
       (with-current-buffer (get-buffer-create "*Elfai-debug*")
@@ -2114,39 +2222,27 @@ defaults to 1."
   "Send parsed buffer messages to an AI model for completion."
   (interactive)
   (let ((req-data
-         (pcase elfai-gpt-model
-           ("gpt-4-vision-preview"
-            (list
-             :max_tokens 500
-             :messages (apply #'vector
-                              (save-excursion
-                                (elfai--parse-image-buffer)))
-             :model elfai-gpt-model
-             :temperature elfai-gpt-temperature
-             :stream t))
-           (_
-            (list
-             :messages (apply #'vector
-                              (save-excursion
-                                (elfai--parse-buffer)))
-             :model elfai-gpt-model
-             :temperature elfai-gpt-temperature
-             :stream t)))))
+         (cond ((elfai-minor-mode-p 'elfai-image-mode)
+                (list
+                 :max_tokens 500
+                 :messages (apply #'vector
+                                  (save-excursion
+                                    (elfai--parse-image-buffer)))
+                 :model "gpt-4-vision-preview"
+                 :temperature elfai-gpt-temperature
+                 :stream t))
+               (t (list
+                   :messages (apply #'vector
+                                    (save-excursion
+                                      (elfai--parse-buffer)))
+                   :model elfai-gpt-model
+                   :temperature elfai-gpt-temperature
+                   :stream t)))))
     (save-excursion
       (elfai--presend)
       (elfai--stream-request
        req-data))))
 
-(defun elfai-change-prompt ()
-  "Edit system prompt, update it, and display a message upon completion."
-  (interactive)
-  (string-edit
-   "Edit system prompt: "
-   elfai--system-message
-   (lambda (edited)
-     (setq elfai--system-message edited)
-     (message "Updated system prompt"))
-   :abort-callback (lambda ())))
 
 ;;;###autoload
 (define-minor-mode elfai-image-mode
@@ -2245,7 +2341,7 @@ Argument PROMPT is the text prompt to accompany the image recognition request."
      (unless (derived-mode-p 'org-mode)
        (org-mode))
      (visual-line-mode 1)
-     (unless (symbol-value 'elfai-image-mode)
+     (unless (elfai-minor-mode-p 'elfai-image-mode)
        (elfai-image-mode))
      (setq-local elfai-gpt-model "gpt-4-vision-preview")
      (goto-char (point-min))
@@ -2274,7 +2370,6 @@ provided input."
     (define-key map (kbd "C-c RET") #'elfai-send)
     map))
 
-
 ;;;###autoload
 (defun elfai-region-convervation (&optional text)
   "Start conservation with selected TEXT in a formatted Org buffer.
@@ -2294,10 +2389,13 @@ Optional argument TEXT is the text to be converted."
        (goto-char (point-min))
        (insert elfai-user-prompt-prefix)
        (save-excursion
-         (insert "\n" (if lang
-                          (concat (concat "#+begin_src " lang "\n" text "\n"
-                                          "#+end_src"))
-                        (concat "#+begin_example\n" text "\n#+end_example"))
+         (insert "\n"
+                 (if (not text)
+                     ""
+                   (if lang
+                       (concat (concat "#+begin_src " lang "\n" text "\n"
+                                       "#+end_src"))
+                     (concat "#+begin_example\n" text "\n#+end_example")))
                  "\n\n"))
        (current-buffer))
      '((display-buffer-reuse-window
@@ -2342,38 +2440,6 @@ PROPS is a plist to put on overlay."
                    org-src-lang-modes))))
 
 
-;;;###autoload
-(defun elfai-rewrite-region (&optional text prompt)
-  "Rewrite TEXT in a region or buffer and display the result in a new buffer.
-
-Optional argument TEXT is the text to be rewritten.
-
-Optional argument PROMPT is the prompt for the rewriting process."
-  (interactive
-   (let*
-       ((reg (elfai-get-region))
-        (prompt
-         (read-string "Rewrite: "
-                      "Rewrite this text. Provide only replacement text without additional comments or explanations.")))
-     (list reg prompt)))
-  (let ((content (or text
-                     (buffer-substring-no-properties (point-min)
-                                                     (point-max)))))
-    (display-buffer
-     (with-current-buffer (get-buffer-create "*Elfai response*")
-       (org-mode)
-       (setq-local elfai-gpt-model elfai-gpt-model)
-       (visual-line-mode 1)
-       (elfai-mode)
-       (goto-char (point-min))
-       (setq elfai--system-message prompt)
-       (insert elfai-user-prompt-prefix content "\n")
-       (elfai-send)
-       (current-buffer))
-     '((display-buffer-reuse-window
-        display-buffer-pop-up-window)
-       (reusable-frames . visible)))))
-
 (define-minor-mode elfai-abort-mode
   "Toggle monitoring `keyboard-quit' commands for aborting GPT requests.
 
@@ -2391,6 +2457,160 @@ exact number of `keyboard-quit' presses to abort."
       (add-hook 'pre-command-hook #'elfai-command-watcher nil 'local)
     (remove-hook 'pre-command-hook #'elfai-command-watcher 'local)
     (setq elfai--bus nil)))
+
+(defun elfai-minor-mode-p (&rest modes)
+  "Check if any of the given minor MODES is active.
+
+Remaining arguments MODES are symbols representing minor modes."
+  (seq-find 'symbol-value modes))
+
+(defun elfai--index-switcher (step current-index switch-list)
+  "Increase or decrease CURRENT-INDEX depending on STEP value and SWITCH-LIST."
+  (cond ((> step 0)
+         (if (>= (+ step current-index)
+                 (length switch-list))
+             0
+           (+ step current-index)))
+        ((< step 0)
+         (if (or (<= 0 (+ step current-index)))
+             (+ step current-index)
+           (1- (length switch-list))))))
+
+(defun elfai-system-prompt ()
+  "Return the current system prompt from `elfai-system-prompts'."
+  (nth elfai-curr-prompt-idx elfai-system-prompts))
+
+(defun elfai-gpt-temperature-description ()
+  "Format and return the current GPT model temperature setting."
+  (format "Temperature: %s" elfai-gpt-temperature))
+
+
+;;;###autoload (autoload 'elfai-menu "elfai" nil t)
+(transient-define-prefix elfai-menu ()
+  "Provide a menu for various AI-powered text and image processing functions."
+  :refresh-suffixes t
+  [["At point"
+    ("a" "Ask and insert"
+     elfai-ask-and-insert :inapt-if-non-nil buffer-read-only)
+    ("h" "Complete" elfai-complete-here :inapt-if-non-nil buffer-read-only)
+    ("." "Complete (send region before point)"
+     elfai-complete-with-partial-context
+     :inapt-if-non-nil buffer-read-only)
+    ("r" "On Region" elfai-region-convervation)]
+   ["Images"
+    ("i" "Recognize image" elfai-recognize-image)
+    ("g" "Generate images" elfai-generate-images-batch)]]
+  [[:description (lambda ()
+                   (let ((prompt (or (elfai-system-prompt)
+                                     "")))
+                     (concat "System prompt: "
+                             (truncate-string-to-width
+                              (with-temp-buffer
+                                (insert prompt)
+                                (fill-region (point-min)
+                                             (point-max))
+                                (buffer-string))
+                              80
+                              nil
+                              nil
+                              t))))
+    ("p" "Previous system prompt"
+     (lambda ()
+       (interactive)
+       (setq elfai-curr-prompt-idx
+             (elfai--index-switcher -1
+                                    elfai-curr-prompt-idx
+                                    elfai-system-prompts)))
+     :transient t)
+    ("n" "Next system prompt"
+     (lambda ()
+       (interactive)
+       (setq elfai-curr-prompt-idx
+             (elfai--index-switcher 1
+                                    elfai-curr-prompt-idx
+                                    elfai-system-prompts)))
+     :transient t)
+    ("SPC" "Add system prompt"
+     (lambda ()
+       (interactive)
+       (string-edit
+        "New system prompt: "
+        ""
+        (lambda (edited)
+          (add-to-list 'elfai-system-prompts edited)
+          (when-let ((idx
+                      (seq-position elfai-system-prompts edited)))
+            (setq elfai-curr-prompt-idx idx))
+          (transient-setup 'elfai-menu))
+        :abort-callback (lambda ())))
+     :transient nil)
+    ("e" "Edit system prompt"
+     (lambda ()
+       (interactive)
+       (string-edit
+        "Edit system prompt: "
+        (nth elfai-curr-prompt-idx
+             elfai-system-prompts)
+        (lambda (edited)
+          (setf (nth elfai-curr-prompt-idx elfai-system-prompts)
+                edited)
+          (transient-setup 'elfai-menu))
+        :abort-callback (lambda ())))
+     :transient nil)
+    ("D" "Delete current system prompt"
+     (lambda ()
+       (interactive)
+       (setq elfai-system-prompts
+             (remove (nth elfai-curr-prompt-idx elfai-system-prompts)
+                     elfai-system-prompts)))
+     :transient t)
+    ("C-x C-w" "Save prompts"
+     (lambda ()
+       (interactive)
+       (customize-save-variable
+        'elfai-system-prompts
+        elfai-system-prompts))
+     :transient t)
+    ("m" elfai-change-default-model
+     :description
+     (lambda ()
+       (if (elfai-minor-mode-p 'elfai-image-mode)
+           "gpt-4-vision-preview"
+         (format "Model: %s" elfai-gpt-model))))
+    ("<up>"
+     (lambda ()
+       (interactive)
+       (setq elfai-gpt-temperature
+             (string-to-number
+              (format "%.1f"
+                      (min
+                       (+
+                        (string-to-number
+                         (format "%.1f"
+                                 (float (or
+                                         elfai-gpt-temperature
+                                         0))))
+                        0.1)
+                       2.0)))))
+     :description elfai-gpt-temperature-description
+     :transient t)
+    ("<down>" (lambda ()
+                (interactive)
+                (setq elfai-gpt-temperature
+                      (string-to-number
+                       (format "%.1f"
+                               (max
+                                (-
+                                 (string-to-number
+                                  (format "%.1f"
+                                          (float (or
+                                                  elfai-gpt-temperature
+                                                  0))))
+                                 0.1)
+                                0.0)))))
+     :description elfai-gpt-temperature-description
+     :transient t)]])
+
 
 (provide 'elfai)
 ;;; elfai.el ends here
