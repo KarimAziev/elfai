@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/elfai
 ;; Version: 0.1.0
 ;; Keywords: tools
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.6.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -257,25 +257,6 @@ user-provided commit message fragment to generate a complete commit message."
   :type '(repeat string)
   :group 'gpt-commit)
 
-;; (defcustom elfai-system-prompt ""
-;;   "Default system prompt for ElfAI operations.
-
-;; Specifies the system prompt used by the elfai interface.
-
-;; The value should be a string that represents the prompt to be displayed to the
-;; user. This prompt can be customized to provide a unique or context-specific
-;; prompt for different interactions within the elfai system.
-
-;; The default value is an empty string, which means no prompt will be displayed
-;; unless explicitly set.
-
-;; To change the prompt, assign a new string value to this variable. This can
-;; enhance the user experience by providing clearer instructions or information
-;; relevant to the current context."
-;;   :type 'string
-;;   :local 'permanent
-;;   :group 'elfai)
-
 (defconst elfai-props-indicator '(elfai response rear-nonsticky t))
 
 (defcustom elfai--stream-after-insert-hook nil
@@ -296,8 +277,11 @@ This hook is particularly useful for extending or customizing the behavior of
 the stream insertion process, allowing for a flexible response to dynamic
 content updates."
   :group 'elfai
+  :local t
   :type 'hook)
 
+
+(defvar-local elfai-old-header-line nil)
 (defvar-local elfai-curr-prompt-idx 0)
 
 (defvar elfai--request-url-buffers nil
@@ -305,10 +289,6 @@ content updates."
 
 (defvar elfai--debug-data-raw nil
   "Stores raw data for debugging purposes.")
-
-;; (defvar-local elfai-system-prompt "")
-
-;; (put 'elfai-system-prompt 'safe-local-variable #'always)
 
 (defvar auth-sources)
 
@@ -573,13 +553,20 @@ Argument RESPONSE is a plist containing the API response data."
               (content (plist-get delta :content)))
     (decode-coding-string content 'utf-8)))
 
+
+
 (defun elfai--insert-with-delay (text)
   "Insert each character of TEXT with a random delay up to 0.3 seconds.
 
 Argument TEXT is the string to be inserted character by character."
-  (dolist (it (split-string text ""))
-    (execute-kbd-macro it)
-    (sit-for (/ (float (random 3)) 10))))
+  (let* ((parts (split-string text "[\s\t]" nil)))
+    (condition-case nil
+        (while parts
+          (insert (car parts) " ")
+          (run-hooks 'post-command-hook)
+          (setq parts (cdr parts))
+          (sit-for (/ (float (random 2)) 10)))
+      (quit (insert (string-join (reverse parts) " "))))))
 
 (defun elfai--stream-insert-response (response info)
   "Insert and format RESPONSE text at a marker.
@@ -599,14 +586,15 @@ information."
             (setq tracking-marker (set-marker (make-marker) (point)))
             (set-marker-insertion-type tracking-marker t)
             (plist-put info :tracking-marker tracking-marker))
+          (goto-char tracking-marker)
           (add-text-properties
            0 (length response) elfai-props-indicator
            response)
-          (goto-char tracking-marker)
           (funcall (or inserter #'insert) response)
-          (run-hook-with-args 'after-change-functions
-                              tracking-marker tracking-marker (length response))
+          (run-hooks 'post-command-hook)
           (run-hooks 'elfai--stream-after-insert-hook))))))
+
+
 
 (defun elfai--abort-by-marker (marker)
   "Restore text properties and clean up after aborting a request.
@@ -787,6 +775,7 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                     :final-callback final-callback
                                     :position start-marker)
                                    props))
+         (error-cb (plist-get info :error-callback))
          (url-request-extra-headers `(("Authorization" .
                                        ,(encode-coding-string
                                          (string-join
@@ -806,16 +795,20 @@ Remaining arguments PROPS are additional properties passed as a plist."
             (let ((err (plist-get response :error)))
               (if err
                   (progn
-                    (message "elfai-callback err %s"
-                             (or
-                              (plist-get err
-                                         :message)
-                              err))
-                    (when (buffer-live-p buffer)
-                      (let ((start-marker
-                             (plist-get info
-                                        :position)))
-                        (elfai--abort-by-marker start-marker))))
+                    (let ((msg (or
+                                (plist-get err
+                                           :message)
+                                (format "%s" err))))
+                      (message "elfai-callback err %s" msg)
+                      (when (buffer-live-p buffer)
+                        (when error-cb
+                          (with-current-buffer buffer
+                            (when error-cb
+                              (funcall error-cb err))))
+                        (let ((start-marker
+                               (plist-get info
+                                          :position)))
+                          (elfai--abort-by-marker start-marker)))))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (elfai--stream-insert-response
@@ -834,7 +827,16 @@ Remaining arguments PROPS are additional properties passed as a plist."
                    (when (symbol-value 'elfai-abort-mode)
                      (elfai-abort-mode -1))
                  (run-with-timer 0.5 nil #'elfai--abort-by-url-buffer buff)
-                 (message err))))))
+                 (message err)
+                 (when (buffer-live-p buffer)
+                   (when (and error-cb (buffer-live-p buffer))
+                     (with-current-buffer buffer
+                       (when error-cb
+                         (funcall error-cb err))))
+                   (let ((start-marker
+                          (plist-get info
+                                     :position)))
+                     (elfai--abort-by-marker start-marker))))))))
     (plist-put info :request-buffer request-buffer)
     (push (cons request-buffer start-marker)
           elfai--request-url-buffers)
@@ -904,7 +906,8 @@ Remaining arguments PROPS are additional properties passed as a plist."
            (cond ((>= len elfai-abort-on-keyboard-quit-count)
                   (message  "elfai: Aborting")
                   (setq elfai--bus nil)
-                  (elfai-abort-all))
+                  (elfai-abort-all)
+                  (elfai--update-status " Aborted" 'error))
                  ((< len elfai-abort-on-keyboard-quit-count)
                   (message
                    (substitute-command-keys
@@ -920,6 +923,35 @@ Argument STR is a string to be inserted."
   (interactive (list (read-string "Ask: ")))
   (elfai-stream nil str))
 
+(defun elfai--get-content-with-cursor (placeholder &optional beg end)
+  "Return buffer string with cursor position as PLACEHOLDER.
+
+Argument PLACEHOLDER is a string to be replaced in the content.
+
+Optional argument BEG is the beginning position in the buffer from which to
+extract content. It defaults to the beginning of the buffer.
+
+Optional argument END is the ending position in the buffer up to which to
+extract content. It defaults to the END of the buffer."
+  (unless beg (setq beg (point-min)))
+  (unless end (setq end (point-max)))
+  (let* ((pos (max (1+ (- (point) beg))
+                   (point-min)))
+         (orig-content (buffer-substring-no-properties (or beg (point-min))
+                                                       (or end (point-max)))))
+    (with-temp-buffer
+      (insert (replace-regexp-in-string
+               (regexp-quote placeholder)
+               (make-string
+                (length
+                 placeholder)
+                ?\*)
+               orig-content))
+      (goto-char pos)
+      (insert placeholder)
+      (buffer-substring-no-properties (point-min)
+                                      (point-max)))))
+
 
 ;;;###autoload
 (defun elfai-complete-here (&optional partial-content)
@@ -928,35 +960,31 @@ Argument STR is a string to be inserted."
 Optional argument PARTIAL-CONTENT is a boolean indicating whether to use only
 the part of the buffer before the point."
   (interactive "P")
-  (let* ((pos (point))
-         (placeholder (car elfai-complete-prompt))
-         (orig-content (buffer-substring-no-properties (point-min)
-                                                       (if partial-content
-                                                           pos
-                                                         (point-max))))
-         (gpt-content (with-temp-buffer
-                        (insert (replace-regexp-in-string
-                                 (regexp-quote placeholder)
-                                 (make-string
-                                  (length
-                                   placeholder)
-                                  ?\*)
-                                 orig-content))
-                        (goto-char pos)
-                        (insert placeholder)
-                        (buffer-substring-no-properties (point-min)
-                                                        (point-max))))
-         (prompt
-          (cdr elfai-complete-prompt)))
-    (when elfai-debug
-      (print gpt-content))
-    (elfai-stream prompt gpt-content)))
+  (let ((gpt-content (elfai--get-content-with-cursor
+                      (car elfai-complete-prompt)
+                      (point-min)
+                      (if partial-content
+                          (point)
+                        (point-max))))
+        (prompt
+         (cdr elfai-complete-prompt)))
+    (elfai--debug gpt-content)
+    (elfai-stream prompt gpt-content nil nil
+                  nil :inserter (lambda (response)
+                                  (save-excursion
+                                    (let ((beg (point)))
+                                      (insert response)
+                                      (when (string-match-p "\n$" response)
+                                        (indent-according-to-mode)
+                                        (add-text-properties
+                                         beg (point) elfai-props-indicator))))))))
 
 ;;;###autoload
 (defun elfai-complete-with-partial-context ()
   "Invoke GPT completion with partial buffer context."
   (interactive)
   (elfai-complete-here t))
+
 
 (defun elfai--format-plural (count singular-str)
   "Format COUNT with SINGULAR-STR, adding \"s\" for plural.
@@ -2131,6 +2159,19 @@ Argument CONTENT is the text to be normalized."
                                                 (length suffix)))))
     content))
 
+(defun elfai--debug (result)
+  "Display debug information in a buffer if `elfai-debug' is enabled.
+
+Argument RESULT is the value to be debugged; it can be a string or any Lisp
+object."
+  (when elfai-debug
+    (with-current-buffer (get-buffer-create "*Elfai-debug*")
+      (visual-line-mode 1)
+      (goto-char (point-max))
+      (insert "\n")
+      (insert (if (stringp result)
+                  result
+                (pp-to-string result))))))
 
 (defun elfai--parse-buffer ()
   "Parse buffer for text properties, categorizing content as user or assistant."
@@ -2168,12 +2209,7 @@ Argument CONTENT is the text to be normalized."
                         :content (or (elfai-system-prompt)
                                      ""))
                        prompts))
-    (when elfai-debug
-      (with-current-buffer (get-buffer-create "*Elfai-debug*")
-        (visual-line-mode 1)
-        (goto-char (point-max))
-        (insert "\n")
-        (insert (pp-to-string result))))
+    (elfai--debug result)
     result))
 
 (defun elfai--line-empty-p ()
@@ -2219,7 +2255,7 @@ defaults to 1."
       (insert elfai-response-suffix)
       (setq end (point)))
     (add-text-properties
-     beg end elfai-props-indicator)))
+     beg end (append elfai-props-indicator line-prefix))))
 
 (defun elfai-send ()
   "Send parsed buffer messages to an AI model for completion."
@@ -2243,8 +2279,19 @@ defaults to 1."
                    :stream t)))))
     (save-excursion
       (elfai--presend)
+      (elfai--update-status " Waiting" 'warning)
       (elfai--stream-request
-       req-data))))
+       req-data
+       (lambda ()
+         (elfai--update-status " Ready" 'success))
+       nil
+       nil
+       :error-callback (lambda (err)
+                         (elfai--update-status (truncate-string-to-width (format
+                                                                          " Error: %s"
+                                                                          err)
+                                                                         50)
+                                               'error))))))
 
 
 ;;;###autoload
@@ -2255,7 +2302,12 @@ defaults to 1."
   :keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c RET") #'elfai-send)
-    map))
+    map)
+  (cond (elfai-image-mode
+         (setq elfai-old-header-line header-line-format)
+         (setq header-line-format (elfai-get-header-line)))
+        (t (setq header-line-format elfai-old-header-line)
+           (setq elfai-old-header-line nil))))
 
 (defvar org-link-types-re)
 (defun elfai--parse-image-data (content)
@@ -2356,6 +2408,45 @@ Argument PROMPT is the text prompt to accompany the image recognition request."
       display-buffer-pop-up-window)
      (reusable-frames . visible))))
 
+(defun elfai-get-header-line ()
+  "Display a header line with model info and interactive buttons."
+  (list
+   '(:eval (concat (propertize " " 'display '(space :align-to 0))
+            (format "%s" elfai-gpt-model)))
+   (propertize " Ready" 'face 'success)
+   '(:eval
+     (let* ((l1 (length elfai-gpt-model))
+            (num-exchanges "[Send: buffer]")
+            (l2 (length num-exchanges)))
+      (concat
+       (propertize
+        " " 'display
+        `(space :align-to ,(max 1 (- (window-width)
+                                   (+ 2 l1 l2)))))
+       (propertize
+        (buttonize num-exchanges
+         (lambda (&rest _)
+           (elfai-send)))
+        'mouse-face 'highlight
+        'help-echo
+        "Send buffer")
+       " "
+       (propertize
+        (buttonize (concat "[" elfai-gpt-model "]")
+         (lambda (&rest _)
+           (elfai-menu)))
+        'mouse-face 'highlight
+        'help-echo "GPT model in use"))))))
+
+(defun elfai--update-status (&optional msg face)
+  "Update status MSG in FACE."
+  (when (or (symbol-value 'elfai-mode)
+            (symbol-value 'elfai-image-mode))
+    (when (consp header-line-format)
+      (setf (nth 1 header-line-format)
+            (propertize msg 'face face)))))
+
+
 ;;;###autoload
 (define-minor-mode elfai-mode
   "Send buffer messages to an AI model for completion with a keybinding.
@@ -2371,7 +2462,12 @@ provided input."
   :keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c RET") #'elfai-send)
-    map))
+    map)
+  (cond (elfai-mode
+         (setq elfai-old-header-line header-line-format)
+         (setq header-line-format (elfai-get-header-line)))
+        (t (setq header-line-format elfai-old-header-line)
+           (setq elfai-old-header-line nil))))
 
 ;;;###autoload
 (defun elfai-region-convervation (&optional text)
@@ -2404,6 +2500,89 @@ Optional argument TEXT is the text to be converted."
      '((display-buffer-reuse-window
         display-buffer-pop-up-window)
        (reusable-frames . visible)))))
+
+(defun elfai--get-error-from-overlay (ov)
+  "Extract error details from an overlay, supporting Flymake and Flycheck.
+
+Argument OV is an overlay object."
+  (when (overlayp ov)
+    (let ((diagnostic))
+      (cond ((setq diagnostic (overlay-get ov 'flymake-diagnostic))
+             (when (and (fboundp 'flymake-diagnostic-text)
+                        (fboundp 'flymake-diagnostic-beg)
+                        (fboundp 'flymake-diagnostic-end))
+               (list
+                (flymake-diagnostic-text diagnostic)
+                (flymake-diagnostic-beg diagnostic)
+                (flymake-diagnostic-end diagnostic))))
+            ((setq diagnostic (overlay-get ov 'flycheck-error))
+             (when (and (fboundp 'flycheck-error-format-message-and-id)
+                        (fboundp 'flycheck-error-line)
+                        (fboundp 'flycheck-error-end-line)
+                        (fboundp 'flycheck-error-end-column)
+                        (fboundp 'flycheck-error-column)
+                        (fboundp 'flycheck-error-pos))
+               (let ((pos (flycheck-error-pos diagnostic)))
+                 (list
+                  (flycheck-error-format-message-and-id
+                   diagnostic)
+                  pos))))))))
+
+;;;###autoload
+(defun elfai-discuss-errors-at-point ()
+  "Start convservation about errors in buffer."
+  (interactive)
+  (let ((errors (reverse (delq nil
+                               (mapcar #'elfai--get-error-from-overlay
+                                       (overlays-in (point-min)
+                                                    (point-max))))))
+        (content))
+    (setq content (catch 'content
+                    (atomic-change-group
+                      (pcase-dolist (`(,text ,beg) errors)
+                        (goto-char beg)
+                        (let ((end))
+                          (insert text)
+                          (setq end (point))
+                          (goto-char beg)
+                          (comment-region beg end)))
+                      (throw 'content (buffer-substring-no-properties (point-min)
+                                                                      (point-max))))))
+    (let ((elfai-user-prompt-prefix
+           (concat elfai-user-prompt-prefix
+                   "Fix the errors, described in comments")))
+      (elfai-region-convervation
+       content))))
+
+;;;###autoload
+(defun elfai-discuss-error-at-point ()
+  "Start convservation about error at point."
+  (interactive)
+  (when-let* ((texts (delete-dups
+                      (delq nil
+                            (mapcar #'elfai--get-error-from-overlay
+                                    (append
+                                     (overlays-at (point))
+                                     (overlays-in (line-beginning-position)
+                                                  (line-end-position)))))))
+              (text (caar texts)))
+    (let ((beg (point))
+          (end)
+          (placeholder))
+      (with-undo-amalgamate
+        (insert text)
+        (setq end (point))
+        (goto-char beg)
+        (comment-region beg end)
+        (forward-comment 1)
+        (setq end (point))
+        (setq placeholder (buffer-substring-no-properties beg end))
+        (delete-region beg end))
+      (let ((elfai-user-prompt-prefix
+             (concat elfai-user-prompt-prefix
+                     "Fix the errors, described in comments")))
+        (elfai-region-convervation
+         (elfai--get-content-with-cursor placeholder))))))
 
 (defun elfai--overlay-make (start end &optional buffer front-advance
                                   rear-advance &rest props)
@@ -2465,7 +2644,7 @@ exact number of `keyboard-quit' presses to abort."
   "Check if any of the given minor MODES is active.
 
 Remaining arguments MODES are symbols representing minor modes."
-  (seq-find 'symbol-value modes))
+  (seq-find #'symbol-value modes))
 
 (defun elfai--index-switcher (step current-index switch-list)
   "Increase or decrease CURRENT-INDEX depending on STEP value and SWITCH-LIST."
@@ -2544,7 +2723,7 @@ Remaining arguments MODES are symbols representing minor modes."
           (when-let ((idx
                       (seq-position elfai-system-prompts edited)))
             (setq elfai-curr-prompt-idx idx))
-          (transient-setup 'elfai-menu))
+          (transient-setup #'elfai-menu))
         :abort-callback (lambda ())))
      :transient nil)
     ("e" "Edit system prompt"
@@ -2557,7 +2736,7 @@ Remaining arguments MODES are symbols representing minor modes."
         (lambda (edited)
           (setf (nth elfai-curr-prompt-idx elfai-system-prompts)
                 edited)
-          (transient-setup 'elfai-menu))
+          (transient-setup #'elfai-menu))
         :abort-callback (lambda ())))
      :transient nil)
     ("D" "Delete current system prompt"
