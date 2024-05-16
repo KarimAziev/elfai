@@ -1058,7 +1058,7 @@ Argument TIME is a time value representing the number of seconds since the epoch
         (concat res " " suffix)))))
 
 (defvar elfai-models-sorted nil
-  "Sorted models fetched.")
+  "Sorted list of open AI models.")
 
 (defun elfai--plist-remove-nils (plist)
   "Remove nil values from a property list.
@@ -2035,8 +2035,9 @@ Remaining arguments ARGS are additional arguments passed to `completing-read'."
                  hist args))
       result)))
 
-(defun elfai--read-gpt-model-variable (prompt &optional predicate require-match
-                                              initial-input hist &rest args)
+(defun elfai--read-gpt-model-variable (prompt &optional predicate
+                                                require-match initial-input hist
+                                                &rest args)
   "Read a GPT model variable with completion, showing its value as annotation.
 
 Argument PROMPT is a string to display as the prompt.
@@ -2060,20 +2061,24 @@ Remaining arguments ARGS are additional arguments passed to `completing-read'."
           (let ((data)
                 (first-items))
             (mapatoms (lambda (sym)
-                        (when (custom-variable-p sym)
-                          (let ((val (symbol-value sym)))
-                            (if
-                                (and (stringp val)
-                                     (assoc-string
-                                      val
-                                      elfai-models-sorted))
-                                (push sym
-                                      first-items)
-                              (when (or (not val)
-                                        (and (stringp val)
-                                             (or (string-empty-p
-                                                  val))))
-                                (push sym data)))))))
+                        (ignore-errors
+                          (when (or (custom-variable-p sym)
+                                    (boundp sym))
+                            (let ((val (symbol-value sym)))
+                              (if
+                                  (and (stringp val)
+                                       (if elfai-models-sorted
+                                           (assoc-string
+                                            val
+                                            elfai-models-sorted)
+                                         (string-prefix-p "gpt-" val)))
+                                  (push sym
+                                        first-items)
+                                (when (or (not val)
+                                          (and (stringp val)
+                                               (or (string-empty-p
+                                                    val))))
+                                  (push sym data))))))))
             (append first-items data)))
          (collection (lambda (str pred action)
                        (if (eq action 'metadata)
@@ -2088,6 +2093,7 @@ Remaining arguments ARGS are additional arguments passed to `completing-read'."
            collection
            predicate require-match initial-input
            hist args)))
+
 
 (defun elfai-set-or-save-variable (var-sym value &optional comment)
   "Ask to save VAR-SYM with VALUE, set it directly, or show a message.
@@ -2113,12 +2119,11 @@ saving."
 
 ;;;###autoload
 (defun elfai-set-model (variable model)
-  "Set a GPT MODEL for a given VARIABLE with user input.
+  "Set the value of VARIABLE to MODEL, optionally saving it.
 
-Argument MODEL is the name of the GPT model to set.
+Argument VARIABLE is the name of the variable to set.
 
-Argument VARIABLE is the name of the Emacs variable to associate with the GPT
-model."
+Argument MODEL is the new value to assign to the variable."
   (interactive (list
                 (elfai--read-gpt-model-variable "Variable: ")
                 (elfai--completing-read-model "Model: ")))
@@ -2126,7 +2131,7 @@ model."
 
 ;;;###autoload
 (defun elfai-change-default-model (model)
-  "Set the default MODEL for elfai to MODEL.
+  "Set `elfai-gpt-model' to MODEL.
 
 Argument MODEL is the name of the GPT model to set."
   (interactive (list
