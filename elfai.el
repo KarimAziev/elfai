@@ -674,6 +674,7 @@ Argument INFO is a property list containing various request-related data."
                                   (save-excursion
                                     (run-hook-with-args 'after-change-functions
                                                         beg beg len)
+                                    (syntax-ppss-flush-cache beg)
                                     (when tracking-marker
                                       (goto-char tracking-marker))
                                     (when final-callback
@@ -969,15 +970,7 @@ the part of the buffer before the point."
         (prompt
          (cdr elfai-complete-prompt)))
     (elfai--debug gpt-content)
-    (elfai-stream prompt gpt-content nil nil
-                  nil :inserter (lambda (response)
-                                  (save-excursion
-                                    (let ((beg (point)))
-                                      (insert response)
-                                      (when (string-match-p "\n$" response)
-                                        (indent-according-to-mode)
-                                        (add-text-properties
-                                         beg (point) elfai-props-indicator))))))))
+    (elfai-stream prompt gpt-content)))
 
 ;;;###autoload
 (defun elfai-complete-with-partial-context ()
