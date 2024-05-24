@@ -2530,22 +2530,36 @@ Argument OV is an overlay object."
 (defun elfai-discuss-errors-at-point ()
   "Start convservation about errors in buffer."
   (interactive)
-  (let ((errors (reverse (delq nil
-                               (mapcar #'elfai--get-error-from-overlay
-                                       (overlays-in (point-min)
-                                                    (point-max))))))
+  (let ((errors (seq-sort-by
+                 (pcase-lambda (`(,_k ,v . _)) v)
+                 #'>
+                 (delq nil
+                       (mapcar #'elfai--get-error-from-overlay
+                               (overlays-in (point-min)
+                                            (point-max))))))
+        (orig-content (buffer-string))
+        (pos (point))
         (content))
     (setq content (catch 'content
-                    (atomic-change-group
-                      (pcase-dolist (`(,text ,beg) errors)
-                        (goto-char beg)
-                        (let ((end))
-                          (insert text)
-                          (setq end (point))
-                          (goto-char beg)
-                          (comment-region beg end)))
-                      (throw 'content (buffer-substring-no-properties (point-min)
-                                                                      (point-max))))))
+                    (pcase-dolist (`(,text ,beg) errors)
+                      (save-excursion (goto-char beg)
+                                      (let ((end)
+                                            (stx (syntax-ppss beg)))
+                                        (when (nth 3 stx)
+                                          (goto-char (nth 8 stx))
+                                          (forward-sexp)
+                                          (setq beg (point)))
+                                        (insert text)
+                                        (setq end (point))
+                                        (goto-char beg)
+                                        (ignore-errors
+                                          (comment-region beg end)))))
+                    (throw 'content (buffer-substring-no-properties (point-min)
+                                                                    (point-max)))))
+    (delete-region (point-min)
+                   (point-max))
+    (insert orig-content)
+    (goto-char pos)
     (let ((elfai-user-prompt-prefix
            (concat elfai-user-prompt-prefix
                    "Fix the errors, described in comments")))
