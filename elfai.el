@@ -2440,8 +2440,8 @@ Argument PROMPT is the text prompt to accompany the image recognition request."
 
 (defun elfai--update-status (&optional msg face)
   "Update status MSG in FACE."
-  (when (or (symbol-value 'elfai-mode)
-            (symbol-value 'elfai-image-mode))
+  (when (or (elfai-minor-mode-p 'elfai-mode
+                                'elfai-image-mode))
     (when (consp header-line-format)
       (setf (nth 1 header-line-format)
             (propertize msg 'face face)))))
