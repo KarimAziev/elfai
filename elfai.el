@@ -265,7 +265,7 @@ user-provided commit message fragment to generate a complete commit message."
 
 (defconst elfai-props-indicator '(elfai response rear-nonsticky t))
 
-(defcustom elfai--stream-after-insert-hook nil
+(defcustom elfai-stream-after-insert-hook nil
   "Hooks run after inserting stream response.
 
 A hook that runs after inserting a response into the stream.
@@ -598,7 +598,7 @@ information."
            response)
           (funcall (or inserter #'insert) response)
           (run-hooks 'post-command-hook)
-          (run-hooks 'elfai--stream-after-insert-hook))))))
+          (run-hooks 'elfai-stream-after-insert-hook))))))
 
 
 
