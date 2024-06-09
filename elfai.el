@@ -670,16 +670,25 @@ Argument INFO is a property list containing various request-related data."
                                    (plist-get info
                                               :position)))
                               (with-current-buffer buffer
-                                (when tracking-marker
-                                  (goto-char tracking-marker))
-                                (when final-callback
-                                  (funcall final-callback))
-                                (when start-marker
-                                  (goto-char start-marker))
-                                (unless (elfai-minor-mode-p
-                                         'elfai-mode
-                                         'elfai-image-mode)
-                                  (elfai--remove-text-props))
+                                (let* ((beg
+                                        (when start-marker
+                                          (marker-position start-marker)))
+                                       (end
+                                        (when tracking-marker
+                                          (marker-position tracking-marker)))
+                                       (len (and beg end (- end beg))))
+                                  (save-excursion
+                                    (run-hook-with-args 'after-change-functions
+                                                        beg beg len)
+                                    (syntax-ppss-flush-cache beg)
+                                    (when tracking-marker
+                                      (goto-char tracking-marker))
+                                    (when final-callback
+                                      (funcall final-callback))
+                                    (when start-marker
+                                      (goto-char start-marker))
+                                    (unless (symbol-value 'elfai-mode)
+                                      (elfai--remove-text-props))))
                                 (setq elfai--request-url-buffers
                                       (assq-delete-all
                                        (plist-get info :request-buffer)
@@ -2264,7 +2273,7 @@ defaults to 1."
                       (elfai--parse-buffer))))
         (inserter
          (if (and
-              (bound-and-true-p org-mode)
+              (derived-mode-p 'org-mode)
               (progn
                 (require 'org-indent nil t)
                 (fboundp 'org-indent-refresh-maybe)))
@@ -2272,16 +2281,17 @@ defaults to 1."
                (let ((beg (point)))
                  (insert it)
                  (org-indent-refresh-maybe beg (point) nil)))
-           #'insert)))
+           #'insert))
+        (req-data (list
+                   :model elfai-gpt-model
+                   :temperature elfai-gpt-temperature
+                   :stream t)))
+    (setq req-data (plist-put req-data :messages (apply #'vector messages)))
     (save-excursion
       (elfai--presend)
       (elfai--update-status " Waiting" 'warning)
       (elfai--stream-request
-       (list
-        :messages (apply #'vector messages)
-        :model elfai-gpt-model
-        :temperature elfai-gpt-temperature
-        :stream t)
+       req-data
        (lambda ()
          (elfai--update-status " Ready" 'success))
        nil
