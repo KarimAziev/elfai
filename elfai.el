@@ -618,6 +618,36 @@ the text properties should be restored."
     (when-let ((cell (rassq marker elfai--request-url-buffers)))
       (setcdr cell nil))))
 
+(defun elfai--plist-merge (plist-a plist-b)
+  "Add props from PLIST-B to PLIST-A."
+  (dotimes (idx (length plist-b))
+    (when (eq (logand idx 1) 0)
+      (let ((prop-name (nth idx plist-b)))
+        (let ((val (plist-get plist-b prop-name)))
+          (plist-put plist-a prop-name val)))))
+  plist-a)
+
+(defun elfai--plist-pick (props plist)
+  "Pick PROPS from PLIST."
+  (let ((result '()))
+    (dolist (prop props result)
+      (when (plist-member plist prop)
+        (setq result (plist-put result prop (plist-get plist prop)))))))
+
+(defun elfai--plist-omit (keys plist)
+  "Remove specified KEYS from PLIST and return the result.
+
+Argument KEYS is a list of keys to omit from PLIST.
+
+Argument PLIST is the property list from which KEYS are omitted."
+  (let (result)
+    (dotimes (idx (length plist))
+      (when (eq (logand idx 1) 0)
+        (let ((key (nth idx plist)))
+          (unless (member key keys)
+            (setq result (plist-put result key (nth (1+ idx) plist)))))))
+    result))
+
 (defun elfai--parse-request-chunks (info)
   "Parse and insert GPT-generated Emacs Lisp documentation.
 
@@ -723,36 +753,6 @@ Argument INFO is a property list containing various request-related data."
                          (setq errored t)
                          (goto-char
                           request-marker))))))))))))))
-
-(defun elfai--plist-merge (plist-a plist-b)
-  "Add props from PLIST-B to PLIST-A."
-  (dotimes (idx (length plist-b))
-    (when (eq (logand idx 1) 0)
-      (let ((prop-name (nth idx plist-b)))
-        (let ((val (plist-get plist-b prop-name)))
-          (plist-put plist-a prop-name val)))))
-  plist-a)
-
-(defun elfai--plist-pick (props plist)
-  "Pick PROPS from PLIST."
-  (let ((result '()))
-    (dolist (prop props result)
-      (when (plist-member plist prop)
-        (setq result (plist-put result prop (plist-get plist prop)))))))
-
-(defun elfai--plist-omit (keys plist)
-  "Remove specified KEYS from PLIST and return the result.
-
-Argument KEYS is a list of keys to omit from PLIST.
-
-Argument PLIST is the property list from which KEYS are omitted."
-  (let (result)
-    (dotimes (idx (length plist))
-      (when (eq (logand idx 1) 0)
-        (let ((key (nth idx plist)))
-          (unless (member key keys)
-            (setq result (plist-put result key (nth (1+ idx) plist)))))))
-    result))
 
 (defun elfai--stream-request (request-data &optional final-callback buffer
                                            position &rest props)
