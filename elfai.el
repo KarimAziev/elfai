@@ -1718,7 +1718,9 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
                                      "\\.png\\'"))
                   (if (member (expand-file-name elfai-images-dir) dirs)
                       dirs
-                    (nconc dirs (list elfai-images-dir))))))
+                    (seq-filter
+                     #'file-exists-p
+                     (nconc dirs (list elfai-images-dir)))))))
          (annotf
           (lambda (file)
             (concat (propertize " " 'display (list 'space :align-to 80))
