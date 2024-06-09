@@ -73,6 +73,7 @@
 (declare-function json-read-from-string "json")
 (declare-function url-host "url-parse")
 (declare-function auth-source-search "auth-source")
+(declare-function org-indent-refresh-maybe "org-indent")
 
 (require 'transient)
 
@@ -131,8 +132,13 @@ key (more secure)."
   :group 'elfai
   :type 'string)
 
-(defcustom elfai-gpt-model "gpt-4-turbo-preview"
+(defcustom elfai-gpt-model "gpt-4o"
   "A string variable representing the API model for OpenAI."
+  :group 'elfai
+  :type 'string)
+
+(defcustom elfai-image-model "gpt-4o"
+  "The API model to use in `elfai-image-mode'."
   :group 'elfai
   :type 'string)
 
@@ -664,25 +670,16 @@ Argument INFO is a property list containing various request-related data."
                                    (plist-get info
                                               :position)))
                               (with-current-buffer buffer
-                                (let* ((beg
-                                        (when start-marker
-                                          (marker-position start-marker)))
-                                       (end
-                                        (when tracking-marker
-                                          (marker-position tracking-marker)))
-                                       (len (and beg end (- end beg))))
-                                  (save-excursion
-                                    (run-hook-with-args 'after-change-functions
-                                                        beg beg len)
-                                    (syntax-ppss-flush-cache beg)
-                                    (when tracking-marker
-                                      (goto-char tracking-marker))
-                                    (when final-callback
-                                      (funcall final-callback))
-                                    (when start-marker
-                                      (goto-char start-marker))
-                                    (unless (symbol-value 'elfai-mode)
-                                      (elfai--remove-text-props))))
+                                (when tracking-marker
+                                  (goto-char tracking-marker))
+                                (when final-callback
+                                  (funcall final-callback))
+                                (when start-marker
+                                  (goto-char start-marker))
+                                (unless (elfai-minor-mode-p
+                                         'elfai-mode
+                                         'elfai-image-mode)
+                                  (elfai--remove-text-props))
                                 (setq elfai--request-url-buffers
                                       (assq-delete-all
                                        (plist-get info :request-buffer)
@@ -2257,41 +2254,47 @@ defaults to 1."
     (add-text-properties
      beg end (append elfai-props-indicator line-prefix))))
 
+
 (defun elfai-send ()
   "Send parsed buffer messages to an AI model for completion."
   (interactive)
-  (let ((req-data
-         (cond ((elfai-minor-mode-p 'elfai-image-mode)
-                (list
-                 :max_tokens 500
-                 :messages (apply #'vector
-                                  (save-excursion
-                                    (elfai--parse-image-buffer)))
-                 :model "gpt-4-vision-preview"
-                 :temperature elfai-gpt-temperature
-                 :stream t))
-               (t (list
-                   :messages (apply #'vector
-                                    (save-excursion
-                                      (elfai--parse-buffer)))
-                   :model elfai-gpt-model
-                   :temperature elfai-gpt-temperature
-                   :stream t)))))
+  (let ((messages (save-excursion
+                    (if (elfai-minor-mode-p 'elfai-image-mode)
+                        (elfai--parse-image-buffer)
+                      (elfai--parse-buffer))))
+        (inserter
+         (if (and
+              (bound-and-true-p org-mode)
+              (progn
+                (require 'org-indent nil t)
+                (fboundp 'org-indent-refresh-maybe)))
+             (lambda (it)
+               (let ((beg (point)))
+                 (insert it)
+                 (org-indent-refresh-maybe beg (point) nil)))
+           #'insert)))
     (save-excursion
       (elfai--presend)
       (elfai--update-status " Waiting" 'warning)
       (elfai--stream-request
-       req-data
+       (list
+        :messages (apply #'vector messages)
+        :model elfai-gpt-model
+        :temperature elfai-gpt-temperature
+        :stream t)
        (lambda ()
          (elfai--update-status " Ready" 'success))
        nil
        nil
        :error-callback (lambda (err)
-                         (elfai--update-status (truncate-string-to-width (format
-                                                                          " Error: %s"
-                                                                          err)
-                                                                         50)
-                                               'error))))))
+                         (elfai--update-status
+                          (truncate-string-to-width
+                           (format
+                            " Error: %s"
+                            err)
+                           50)
+                          'error))
+       :inserter inserter))))
 
 
 ;;;###autoload
@@ -2303,6 +2306,7 @@ defaults to 1."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c RET") #'elfai-send)
     map)
+  (setq-local elfai-gpt-model elfai-image-model)
   (cond (elfai-image-mode
          (setq elfai-old-header-line header-line-format)
          (setq header-line-format (elfai-get-header-line)))
@@ -2319,7 +2323,7 @@ Argument CONTENT is the string containing the image data to be parsed."
     (with-temp-buffer
       (insert content)
       (print content)
-      (while (re-search-backward "\\[\\[\\([^]]+\\)\\]\\]" nil t 1)
+      (while (re-search-backward "\\[\\[\\(\\(?:[^][\\]\\|\\\\\\(?:\\\\\\\\\\)*[][]\\|\\\\+[^][]\\)+\\)]\\(?:\\[\\([^z-a]+?\\)]\\)?]" nil t 1)
         (when-let ((image-file (match-string-no-properties 1)))
           (replace-match "" nil nil nil 0)
           (let ((file (if org-link-types-re
@@ -2398,7 +2402,6 @@ Argument PROMPT is the text prompt to accompany the image recognition request."
      (visual-line-mode 1)
      (unless (elfai-minor-mode-p 'elfai-image-mode)
        (elfai-image-mode))
-     (setq-local elfai-gpt-model "gpt-4-vision-preview")
      (goto-char (point-min))
      (insert elfai-user-prompt-prefix prompt "\n" (format "[[%s]]" image-file)
              "\n\n")
@@ -2770,9 +2773,7 @@ Remaining arguments MODES are symbols representing minor modes."
     ("m" elfai-change-default-model
      :description
      (lambda ()
-       (if (elfai-minor-mode-p 'elfai-image-mode)
-           "gpt-4-vision-preview"
-         (format "Model: %s" elfai-gpt-model))))
+       (format "Model: %s" elfai-gpt-model)))
     ("<up>"
      (lambda ()
        (interactive)
