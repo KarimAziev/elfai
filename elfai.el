@@ -286,6 +286,8 @@ content updates."
   :local t
   :type 'hook)
 
+(defvar-local elfai--bounds nil)
+(put 'elfai--bounds 'safe-local-variable #'always)
 
 (defvar-local elfai-old-header-line nil)
 (defvar-local elfai-curr-prompt-idx 0)
@@ -2323,6 +2325,8 @@ defaults to 1."
         (t (setq header-line-format elfai-old-header-line)
            (setq elfai-old-header-line nil))))
 
+(put 'elfai-image-mode 'permanent-local t)
+
 (defvar org-link-types-re)
 (defun elfai--parse-image-data (content)
   "Parse image data from CONTENT, replacing links with encoded images.
@@ -2477,10 +2481,37 @@ provided input."
     (define-key map (kbd "C-c RET") #'elfai-send)
     map)
   (cond (elfai-mode
+         (org-mode)
+         (visual-line-mode 1)
+         (add-hook 'before-save-hook #'elfai--save-state nil t)
+         (elfai--restore-state)
          (setq elfai-old-header-line header-line-format)
          (setq header-line-format (elfai-get-header-line)))
-        (t (setq header-line-format elfai-old-header-line)
-           (setq elfai-old-header-line nil))))
+        (t
+         (remove-hook 'before-save-hook #'elfai--save-state t)
+         (setq header-line-format elfai-old-header-line)
+         (setq elfai-old-header-line nil))))
+
+(put 'elfai-mode 'permanent-local t)
+
+(defun elfai--get-other-wind ()
+  "Return another window or split sensibly if needed."
+  (let ((wind-target
+         (if (minibuffer-selected-window)
+             (with-minibuffer-selected-window
+               (let ((wind (selected-window)))
+                 (or
+                  (window-right wind)
+                  (window-left wind)
+                  (split-window-sensibly)
+                  wind)))
+           (let ((wind (selected-window)))
+             (or
+              (window-right wind)
+              (window-left wind)
+              (split-window-sensibly)
+              wind)))))
+    wind-target))
 
 ;;;###autoload
 (defun elfai-region-convervation (&optional text)
@@ -2492,9 +2523,6 @@ Optional argument TEXT is the text to be converted."
   (let ((lang (elfai-get-org-language)))
     (display-buffer
      (with-current-buffer (get-buffer-create "*Elfai response*")
-       (unless (derived-mode-p 'org-mode)
-         (org-mode))
-       (visual-line-mode 1)
        (unless (symbol-value 'elfai-mode)
          (elfai-mode))
        (setq-local elfai-gpt-model elfai-gpt-model)
@@ -2641,11 +2669,23 @@ PROPS is a plist to put on overlay."
 (defun elfai-get-org-language ()
   "Return the Org mode language associated with the current major mode."
   (require 'org)
-  (let ((mode (replace-regexp-in-string "-mode$" "" (symbol-name major-mode))))
-    (car (seq-find (pcase-lambda (`(,_lang . ,v))
-                     (if (stringp v)
-                         (string= v mode)
-                       (string= (format "%s" v)  mode)))
+  (let* ((mode-name (symbol-name
+                     major-mode))
+         (mode (replace-regexp-in-string "-mode$" "" mode-name))
+         (no-ts-mode
+          (replace-regexp-in-string "-\\(ts-\\)?mode$" ""
+                                    mode-name)))
+    (car (seq-find (pcase-lambda (`(,lang . ,v))
+                     (let ((str (if (stringp v)
+                                    v
+                                  (format "%s" v)))
+                           (lang-str (if (stringp lang)
+                                         lang
+                                       (format "%s" lang))))
+                       (or (string= str mode)
+                           (string= str no-ts-mode)
+                           (string= mode lang-str)
+                           (string= no-ts-mode lang-str))))
                    org-src-lang-modes))))
 
 
@@ -2692,6 +2732,69 @@ Remaining arguments MODES are symbols representing minor modes."
 (defun elfai-gpt-temperature-description ()
   "Format and return the current GPT model temperature setting."
   (format "Temperature: %s" elfai-gpt-temperature))
+
+(defun elfai--get-buffer-bounds ()
+  "Return the elfai response boundaries in the buffer as an alist."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char (point-max))
+      (let ((prop)
+            (bounds))
+        (while (setq prop (text-property-search-backward
+                           'elfai 'response t))
+          (push (cons (prop-match-beginning prop)
+                      (prop-match-end prop))
+                bounds))
+        bounds))))
+
+(defun elfai--restore-text-props ()
+  "Restore text properties for response regions in the `elfai--bounds' list."
+  (pcase-dolist (`(,beg . ,end) elfai--bounds)
+    (add-text-properties beg end elfai-props-indicator)))
+
+(defun elfai--restore-state ()
+  "Restore gptel state when turning on `gptel-mode'."
+  (when (buffer-file-name)
+    (elfai--restore-text-props)))
+
+(defun elfai--save-state ()
+  "Write the gptel state to the buffer.
+
+This enables saving the chat session when writing the buffer to
+disk.  To restore a chat session, turn on `gptel-mode' after
+opening the file."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (let ((items `(elfai-gpt-model elfai-gpt-temperature
+                     elfai-curr-prompt-idx
+                     elfai-system-prompts
+                     (eval . ,(if (elfai-minor-mode-p 'elfai-image-mode)
+                                  `(progn
+                                     (require 'elfai)
+                                     (elfai-image-mode 1))
+                                `(progn
+                                   (require 'elfai)
+                                   (elfai-mode 1)))))))
+        (dolist (item items)
+          (pcase item
+            ((pred (symbolp))
+             (add-file-local-variable item (symbol-value item)))
+            (`(eval . ,value)
+             (let ((regex
+                    (concat "^" (string-trim (or comment-start "#"))
+                            " eval: "
+                            (regexp-quote
+                             (prin1-to-string
+                              value)))))
+               (unless (save-excursion
+                         (save-restriction
+                           (widen)
+                           (goto-char (point-max))
+                           (re-search-backward regex nil t 1)))
+                 (add-file-local-variable (car item) value)))))))
+      (add-file-local-variable 'elfai--bounds (elfai--get-buffer-bounds)))))
 
 
 ;;;###autoload (autoload 'elfai-menu "elfai" nil t)
