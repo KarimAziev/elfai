@@ -26,33 +26,43 @@
 
 ;;; Commentary:
 
-;; This package provides a set of tools to interact with OpenAI's GPT models
-;; directly from Emacs. It allows users to send prompts to the model and
-;; receive responses, which can be used for a variety of tasks such as
-;; code completion, text generation, and more.
+;; `elfai' is an Emacs package that provides an interface to OpenAI's GPT models.
 
-;; The package defines a number of custom variables and functions to handle
-;; the communication with the OpenAI API, manage API keys, and process the
-;; responses. It also includes a minor mode (`elfai-abort-mode') to monitor
-;; and handle aborting GPT requests using `keyboard-quit' commands.
+;; It offers a variety of commands to interact with GPT models, including text
+;; completion, image generation, and more. The package is designed to be
+;; user-friendly and integrates seamlessly with Emacs.
 
-;; To use this package, you need to set your OpenAI API key using the
-;; `elfai-api-key' custom variable. You can also customize the behavior of
-;; the package by setting other provided custom variables.
+;; Key Features:
 
-;; The main entry points for interacting with the GPT models are the
-;; `elfai-ask-and-insert', `elfai-complete-here', `elfai-create-image',
-;; `elfai-create-image-variation', `elfai-recognize-image', and
-;; `elfai-set-model' functions. These functions allow you to send prompts
-;; to the model, generate images, create variations of images, recognize
-;; content in images, and set the model for a given variable.
+;; - Seamlessly expand file links to their content in the prompt. Ensure that any
+;;   file links included in the prompt are automatically expanded to their actual
+;;   content. Use the `elfai-before-parse-buffer-hook' to run before parsing the
+;;   buffer for AI model completion, with the default function
+;;   `elfai-copy-and-replace-user-links' handling the replacement of user links
+;;   with new paths after copying files to the `elfai` directory. This allows
+;;   editing of original files without affecting the content sent to the model.
 
-;; The package also provides utility functions for fetching and sorting
-;; available GPT models, downloading images, and formatting time differences
-;; in a human-readable way.
+;; - Embed images directly within prompts, and ensure that these images are
+;;   included in a format acceptable to the model. Preview org-inline-images in
+;;   the buffer and convert them to base64 format if they match the extensions
+;;   specified in `elfai-image-allowed-file-extensions'.
 
-;; To get started, install the package, set your API key, and start using
-;; the provided functions to interact with the GPT models.
+;; - Expand #+INCLUDE: directives to include file content in the prompt.
+
+;; - Generate images using OpenAI's API.
+
+;; - Abort ongoing requests.
+
+;; - Integrate transient interface for easy command access.
+
+
+;; Main Commands:
+;; - `elfai': Start or switch to a chat session.
+;; - `elfai-menu': Open a transient menu for various AI-powered text and image processing functions.
+;; - `elfai-complete-here': Replace placeholder text in a buffer with GPT-generated content.
+;; - `elfai-ask-and-insert': Prompt for input and send it to GPT for processing.
+;; - `elfai-generate-images-batch': Generate a batch of images.
+;; - `elfai-abort-all': Cancel all pending GPT document requests.
 
 ;;; Code:
 
@@ -69,15 +79,18 @@
 (defvar url-http-end-of-headers)
 
 (declare-function json-encode "json")
+
 (declare-function json-read "json")
 (declare-function json-read-from-string "json")
 (declare-function url-host "url-parse")
 (declare-function auth-source-search "auth-source")
 (declare-function org-indent-refresh-maybe "org-indent")
+(declare-function org-link-open-as-file "ol")
+(defvar org-link-types-re)
 
 (require 'transient)
 
-(defcustom elfai-abort-on-keyboard-quit-count 3
+(defcustom elfai-abort-on-keyboard-quit-count 5
   "Number of `keyboard-quit' presses before aborting GPT documentation requests.
 
 Determines the number of consecutive `keyboard-quit' commands needed to abort an
@@ -93,6 +106,129 @@ If the number of `keyboard-quit' commands does not reach the set threshold, the
 abort action will not be triggered."
   :group 'elfai
   :type 'integer)
+
+(defcustom elfai-status-indicator '(elfai-update-header)
+  "List of functions to update the status indicator.
+
+A list of functions to update the status indicator.
+
+Each function in the list should accept two arguments:
+a message (MSG) and a face property (FACE) to style the message.
+
+The default functions are `elfai-update-header' and
+`elfai-update-mode-line-process'. Additional custom functions can
+be added to this list."
+  :group 'elfai
+  :type '(set :tag "Update functions"
+          (function-item elfai-update-header)
+          (function-item elfai-update-mode-line-process)
+          (repeat
+           :inline t
+           :tag "Custom functions" function)))
+
+(defcustom elfai-before-parse-buffer-hook '(elfai-copy-and-replace-user-links)
+  "A hook that runs before parsing the buffer for AI model completion.
+
+The default function in the hook is `elfai-copy-and-replace-user-links'.
+
+Functions added to this hook should take no arguments and will be
+executed in the current buffer context."
+  :group 'elfai
+  :type 'hook)
+
+(defcustom elfai-non-embeddable-file-extensions '("iso" "bin" "exe" "gpg" "elc"
+                                                  "eln" "tar" "gz" "doc" "xlsx"
+                                                  "docx" "mp4" "mkv"
+                                                  "webm" "3gp" "MOV" "f4v"
+                                                  "rmvb" "heic" "HEIC" "mov"
+                                                  "wvx" "wmx" "wmv" "wm"
+                                                  "asx"
+                                                  "mk3d" "fxm" "flv" "axv" "viv"
+                                                  "yt" "s1q" "smo" "smov" "ssw"
+                                                  "sswf" "s14"
+                                                  "s11"
+                                                  "smpg" "smk" "bk2" "bik" "nim"
+                                                  "pyv" "m4u" "mxu" "fvt" "dvb"
+                                                  "uvvv" "uvv"
+                                                  "uvvs"
+                                                  "uvs" "uvvp" "uvp" "uvvu"
+                                                  "uvu" "uvvm" "uvm" "uvvh"
+                                                  "uvh" "ogv" "m2v" "m1v"
+                                                  "m4v"
+                                                  "mpg4" "mjp2" "mj2" "m4s"
+                                                  "3gpp2" "3g2" "3gpp" "avi"
+                                                  "movie" "mpe" "mpeg"
+                                                  "mpegv"
+                                                  "mpg" "mpv" "qt" "vbs" "pdf"
+                                                  "zip" "rar" "7z" "bz2" "xz"
+                                                  "tar.gz" "tar.bz2"
+                                                  "tar.xz" "tgz" "tbz2" "txz"
+                                                  "dll" "so" "dylib" "lib"
+                                                  "class" "jar" "war"
+                                                  "ear"
+                                                  "img" "dmg" "mp3" "wav" "flac"
+                                                  "aac" "ogg" "wma" "m4a" "ppt"
+                                                  "pptx" "odp"
+                                                  "xls"
+                                                  "ods" "epub" "mobi" "azw"
+                                                  "azw3" "psd" "ai" "indd" "ttf"
+                                                  "otf" "woff"
+                                                  "woff2"
+                                                  "swf" "fla" "apk" "ipa" "deb"
+                                                  "rpm" "pkg" "msi" "bat" "cmd"
+                                                  "vmdk" "vdi"
+                                                  "vhd" "qcow2" "crt" "pem"
+                                                  "key" "csr" "pfx" "p12" "tmp"
+                                                  "sqlite" "db" "mdb"
+                                                  "accdb" "blend" "fbx" "obj"
+                                                  "stl" "dwg" "dxf" "gpx" "kml"
+                                                  "torrent" "ics"
+                                                  "msg"
+                                                  "eml" "vcf" "com" "scr" "pif"
+                                                  "cpl" "msc" "drv" "vbox"
+                                                  "vbox-extpack"
+                                                  "vbox-prev"
+                                                  "old" "sav" "tmp" "crdownload"
+                                                  "part" "svg" "xpm")
+  "List of file extensions that are considered non-embeddable.
+
+This variable defines a list of file extensions that should not be embedded.
+
+These file types include binary files, archives, executables, multimedia files,
+and other formats that do not contain standard text or are not suitable for
+embedding. Images are excluded from this list as they are allowed to be
+embedded.
+
+Examples of non-embeddable file types include:
+- Archives (e.g., zip, rar, tar.gz)
+- Executables (e.g., exe, bin, dll)
+- Multimedia files (e.g., mp4, mkv, mp3)
+- Documents (e.g., pdf, docx, xlsx)
+- Encrypted files (e.g., gpg, pfx)
+- System files (e.g., msi)
+
+This list can be customized to include or exclude specific file extensions
+based on your requirements."
+  :group 'elfai
+  :type '(repeat string))
+
+(defcustom elfai-image-allowed-file-extensions '("png" "jpg" "jpeg" "gif")
+  "List of allowed file extensions for image files.
+
+A list of allowed file extensions for image files.
+
+Each element in the list should be a string representing a file
+extension, such as \"png\", \"jpg\", or \"jpeg\".
+
+This list is used to filter image files when prompting the user
+to select an image file."
+  :group 'elfai
+  :type '(repeat (string :tag "File extension")))
+
+(defcustom elfai-attachment-dir "~/elfai-attachments/"
+  "Directory where elfai attachments are stored."
+  :group 'elfai
+  :type 'directory)
 
 (defcustom elfai-complete-prompt (cons "<<$0>>"
                                        "Directly below is a placeholder '<<$0>>' within a code or text snippet. You are tasked with replacing this placeholder. Only provide the precise code or text that should replace '<<$0>>'. Do not add any extra formatting, annotations, don't wrap it in ```.")
@@ -110,6 +246,7 @@ placeholder with the exact code or text needed, without any extra formatting or
 annotations."
   :group 'elfai
   :type '(cons string string))
+
 
 (defcustom elfai-debug nil
   "Whether to allow debug logging.
@@ -131,23 +268,7 @@ If a list, it is a list of the types of messages to be logged."
            (const :tag "Response" response)
            (symbol :tag "Other" ))))
 
-(defun elfai--debug (tag &rest args)
-  "Log debug messages based on the variable `elfai-debug'.
-
-Argument TAG is a symbol or string used to identify the debug message.
-
-Remaining arguments ARGS are format string followed by objects to format,
-similar to `format' function arguments."
-  (when (and elfai-debug
-             (or (eq elfai-debug t)
-                 (numberp elfai-debug)
-                 (and (listp elfai-debug)
-                      (memq tag elfai-debug))))
-    (with-current-buffer (get-buffer-create "*elfai-debug*")
-      (goto-char (point-max))
-      (insert (format "%s" tag) " -> " (apply #'format args) "\n")
-      (when (numberp elfai-debug)
-        (apply #'message args)))))
+(defvar-local elfai-loading nil)
 
 (defcustom elfai-api-key 'elfai-api-key-from-auth-source
   "An OpenAI API key (string).
@@ -165,17 +286,14 @@ key (more secure)."
   :group 'elfai
   :type 'string)
 
-(defcustom elfai-gpt-model "gpt-4o"
+
+(defcustom elfai-model "gpt-4o"
   "A string variable representing the API model for OpenAI."
   :group 'elfai
   :type 'string)
 
-(defcustom elfai-image-model "gpt-4o"
-  "The API model to use in `elfai-image-mode'."
-  :group 'elfai
-  :type 'string)
 
-(defcustom elfai-gpt-temperature 0.1
+(defcustom elfai-temperature 0.1
   "The temperature for the OpenAI GPT model used.
 
 This is a number between 0.0 and 2.0 that controls the randomness
@@ -227,7 +345,7 @@ trim user prompts, ensuring that only the actual input text is processed."
   :group 'elfai
   :type 'string)
 
-(defcustom elfai-response-prefix "\n#+begin_src markdown\n"
+(defcustom elfai-response-prefix "\n\n#+begin_src markdown\n"
   "Prefix for formatting responses in markdown.
 
 Specifies the prefix to be inserted before responses in the assistant's output.
@@ -244,7 +362,7 @@ assistant's responses are presented within Org mode documents."
   :group 'elfai
   :type 'string)
 
-(defcustom elfai-response-suffix "\n#+end_src\n"
+(defcustom elfai-response-suffix "\n#+end_src\n\n"
   "Suffix appended to responses.
 
 A string appended to the end of responses generated by the assistant.
@@ -275,8 +393,10 @@ formatting issues."
            :value 0.2))
   :group 'elfai)
 
-(defcustom elfai-system-prompts '(""
-                                  "Rewrite this function")
+(defcustom elfai-system-prompt-alist '(("None" . "")
+                                       ("Org" . "Please respond using Org-mode syntax. For example, use =symbol-name= instead of `symbol-name`. For lists, use \"-\" or bullets instead of numerical or alphabetical lists.")
+                                       ("Grammar" . "Check grammar")
+                                       ("Refactor" . "Rewrite this function"))
   "List of predefined system prompts.
 
 A list of system prompts used to guide the generation of commit messages with
@@ -293,7 +413,9 @@ To use these prompts, select one from the list as the active prompt when
 invoking the commit message generation function. The selected prompt will be
 sent to the GPT model along with the `git diff --cached` output and any
 user-provided commit message fragment to generate a complete commit message."
-  :type '(repeat string)
+  :type '(alist
+          :key-type string
+          :value-type string)
   :group 'gpt-commit)
 
 (defconst elfai-props-indicator '(elfai response rear-nonsticky t))
@@ -322,6 +444,8 @@ content updates."
 (defvar-local elfai--bounds nil)
 (put 'elfai--bounds 'safe-local-variable #'always)
 
+(declare-function org-link-make-regexps "ol")
+
 (defvar-local elfai-old-header-line nil)
 (defvar-local elfai-curr-prompt-idx 0)
 
@@ -332,6 +456,14 @@ content updates."
   "Stores raw data for debugging purposes.")
 
 (defvar auth-sources)
+
+(defvar elfai--multi-source-minibuffer-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C->") #'elfai--source-select-next)
+    (define-key map (kbd "C-j") #'elfai--preview-minibuffer-file)
+    (define-key map (kbd "C-<") #'elfai--multi-source-select-prev)
+    map)
+  "Keymap to use in minibuffer.")
 
 (defun elfai-api-key-from-auth-source (&optional url)
   "Return the fist API key from the auth source for URL.
@@ -449,7 +581,6 @@ represent a JSON false value.  It defaults to `:false'."
   "Cancel all pending GPT document requests."
   (elfai--abort-by-url-buffer t))
 
-;;;###autoload
 (defun elfai-abort-all ()
   "Terminate the process associated with a buffer BUFF and delete its buffer.
 
@@ -658,7 +789,7 @@ aborted."
 Argument STATUS is a plist containing the status of the HTTP request."
   (pcase-let*
       ((status-error (plist-get status :error))
-       (`(_err ,type ,code) status-error)
+       (`(_err ,type ,code . _rest) status-error)
        (description
         (and status-error
              (progn
@@ -681,8 +812,8 @@ Argument STATUS is a plist containing the status of the HTTP request."
                        "elfai error"))
              (details (delq nil
                             (list
-                             (when type  (format "%s request failed" type))
-                             (when code (format "with status %s" code))
+                             (when type  (format "%s" type))
+                             (when code (format "because of %s" code))
                              (when description (format "- %s" description))))))
         (if details
             (concat prefix ": "
@@ -702,20 +833,6 @@ Argument RESPONSE is a plist containing the API response data."
               (content (plist-get delta :content)))
     (decode-coding-string content 'utf-8)))
 
-
-
-(defun elfai--insert-with-delay (text)
-  "Insert each character of TEXT with a random delay up to 0.3 seconds.
-
-Argument TEXT is the string to be inserted character by character."
-  (let* ((parts (split-string text "[\s\t]" nil)))
-    (condition-case nil
-        (while parts
-          (insert (car parts) " ")
-          (run-hooks 'post-command-hook)
-          (setq parts (cdr parts))
-          (sit-for (/ (float (random 2)) 10)))
-      (quit (insert (string-join (reverse parts) " "))))))
 
 (defun elfai--stream-insert-response (response info)
   "Insert and format RESPONSE text at a marker.
@@ -740,9 +857,7 @@ information."
            0 (length response) elfai-props-indicator
            response)
           (funcall (or inserter #'insert) response)
-          (run-hooks 'post-command-hook)
           (run-hooks 'elfai-stream-after-insert-hook))))))
-
 
 
 (defun elfai--abort-by-marker (marker)
@@ -790,6 +905,34 @@ Argument PLIST is the property list from which KEYS are omitted."
           (unless (member key keys)
             (setq result (plist-put result key (nth (1+ idx) plist)))))))
     result))
+
+(defcustom elfai-after-full-response-insert-hook nil
+  "Hook run after inserting the full response.
+
+A hook that runs after a full response has been inserted.
+
+This hook is useful for performing additional actions or
+processing after the insertion of a complete response. Each
+function in the hook is called with two arguments: the beginning
+and end positions of the inserted text."
+  :group 'elfai
+  :type 'hook)
+
+(defcustom elfai-after-full-response-insert-functions nil
+  "Hook for functions to run after inserting a full response.
+
+A list of functions to be called after a full response has been
+inserted into the buffer.
+
+Each function in the list is called with two arguments: the
+beginning and end positions of the inserted text. This allows
+for additional processing or actions to be performed on the
+inserted text, such as syntax highlighting, formatting, or
+further analysis."
+  :group 'elfai
+  :type 'hook)
+
+
 
 (defun elfai--parse-request-chunks (info)
   "Parse and insert GPT-generated Emacs Lisp documentation.
@@ -861,13 +1004,19 @@ Argument INFO is a property list containing various request-related data."
                                     (when start-marker
                                       (goto-char start-marker))
                                     (unless (symbol-value 'elfai-mode)
-                                      (elfai--remove-text-props))))
-                                (setq elfai--request-url-buffers
-                                      (assq-delete-all
-                                       (plist-get info :request-buffer)
-                                       elfai--request-url-buffers))
-                                (when (symbol-value 'elfai-abort-mode)
-                                  (elfai-abort-mode -1)))))
+                                      (elfai--remove-text-props)))
+                                  (setq elfai--request-url-buffers
+                                        (assq-delete-all
+                                         (plist-get info :request-buffer)
+                                         elfai--request-url-buffers))
+                                  (when (symbol-value 'elfai-abort-mode)
+                                    (elfai-abort-mode -1))
+                                  (run-hook-with-args
+                                   'elfai-after-full-response-insert-functions
+                                   beg
+                                   end)
+                                  (run-hooks
+                                   'elfai-after-full-response-insert-hook)))))
                           (set-marker
                            request-marker
                            (point)))
@@ -940,6 +1089,7 @@ Remaining arguments PROPS are additional properties passed as a plist."
                              request-data)
                             'utf-8))
          (request-buffer)
+         (typing)
          (callback
           (lambda (response)
             (let ((err (plist-get response :error)))
@@ -961,6 +1111,9 @@ Remaining arguments PROPS are additional properties passed as a plist."
                           (elfai--abort-by-marker start-marker)))))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
+                    (unless typing
+                      (setq typing t)
+                      (elfai--update-status " Typing..." 'warning t))
                     (elfai--stream-insert-response
                      (elfai--get-response-content
                       response)
@@ -1029,9 +1182,9 @@ Remaining arguments PROPS are additional properties passed as a plist."
     (apply #'elfai--stream-request
            (elfai--plist-merge (list
                                 :messages messages
-                                :model elfai-gpt-model
+                                :model elfai-model
                                 :temperature
-                                elfai-gpt-temperature
+                                elfai-temperature
                                 :stream t)
                                (elfai--plist-pick
                                 '(:model
@@ -1047,22 +1200,28 @@ Remaining arguments PROPS are additional properties passed as a plist."
 (defvar-local elfai--bus nil
   "Local variable holding the event bus instance.")
 
+
 (defun elfai-command-watcher ()
   "Monitor `keyboard-quit' commands and handle GPT documentation aborts."
   (cond ((and elfai--request-url-buffers
               (eq this-command 'keyboard-quit))
          (push this-command elfai--bus)
-         (let ((len (length elfai--bus)))
-           (cond ((>= len elfai-abort-on-keyboard-quit-count)
-                  (message  "elfai: Aborting")
+         (let ((count
+                (- elfai-abort-on-keyboard-quit-count
+                   (length elfai--bus))))
+           (cond ((zerop count)
                   (setq elfai--bus nil)
                   (elfai-abort-all)
-                  (elfai--update-status " Aborted" 'error))
-                 ((< len elfai-abort-on-keyboard-quit-count)
-                  (message
-                   (substitute-command-keys
-                    "elfai: Press `\\[keyboard-quit]' %d more times to force interruption.")
-                   (- elfai-abort-on-keyboard-quit-count len))))))
+                  (elfai--update-status " Aborted" 'warning)
+                  (message (propertize "Aborted" 'face 'warning)))
+                 ((<= count 2)
+                  (let ((msg
+                         (substitute-command-keys
+                          (format
+                           " Press `\\[keyboard-quit]' %d more times to abort"
+                           count))))
+                    (elfai--update-status msg 'warning t)
+                    (message msg))))))
         (elfai--bus (setq elfai--bus nil))))
 
 ;;;###autoload
@@ -1564,13 +1723,6 @@ Return the category metadatum as the type of the target."
        (and target (minibufferp))))
     target))
 
-(defun elfai--minibuffer-exit-with-action (action)
-  "Call ACTION with current candidate and exit minibuffer."
-  (pcase-let ((`(,_category . ,current)
-               (elfai--minibuffer-get-current-candidate)))
-    (progn (run-with-timer 0.1 nil action current)
-           (abort-minibuffers))))
-
 (defun elfai--minibuffer-action-no-exit (action)
   "Call ACTION with minibuffer candidate in its original window."
   (pcase-let ((`(,_category . ,current)
@@ -1705,36 +1857,36 @@ Argument FILE is the path to the file to preview."
   "Sort FILES by modification time and return as reversed alist.
 
 Argument FILES is a list of file names to process."
-  (nreverse (seq-sort-by
-             (pcase-lambda (`(,_k . ,v)) v)
-             #'time-less-p
-             (mapcar
-              (lambda (file)
-                (cons
-                 (abbreviate-file-name file)
-                 (file-attribute-modification-time
-                  (file-attributes
-                   file))))
-              files))))
+  (seq-sort-by
+   (pcase-lambda (`(,_k . ,v)) v)
+   (lambda (a b)
+     (not (time-less-p a b)))
+   (mapcar
+    (lambda (file)
+      (cons
+       (abbreviate-file-name file)
+       (file-attribute-modification-time
+        (file-attributes
+         file))))
+    files)))
 
-(defun elfai--lines-from-process (program &rest args)
-  "Return a completion table for output lines from PROGRAM run with ARGS."
-  (let ((last-pt 1) lines)
-    (lambda (string pred action)
-      (if (eq action 'metadata)
-          `(metadata (async ,program ,@args)
-            (category lines-from-process))
-        (with-current-buffer "*async-completing-read*"
-          (when (> (point-max) last-pt)
-            (setq lines
-                  (append lines
-                          (split-string
-                           (let ((new-pt (point-max)))
-                             (prog1
-                                 (buffer-substring last-pt new-pt)
-                               (setq last-pt new-pt)))
-                           "\n" 'omit-nulls)))))
-        (complete-with-action action lines string pred)))))
+
+
+(defun elfai--map-to-arguments (arg arg-values &optional format-str)
+  "Return a list of ARG paired with each formatted/unformatted value in ARG-VALUES.
+
+Argument ARG is the argument name to be mapped.
+
+Argument ARG-VALUES is a list of values to be mapped to ARG.
+
+Optional argument FORMAT-STR is a format string to format each value in
+ARG-VALUES."
+  (mapcan (lambda (it)
+            (list arg (if format-str
+                          (format format-str
+                                  it)
+                        it)))
+          arg-values))
 
 
 (defun elfai--fdfind-completing-read (&optional prompt)
@@ -1743,128 +1895,145 @@ Argument FILES is a list of file names to process."
 Argument PROMPT is a string displayed as the prompt in the minibuffer."
   (let ((default-directory (expand-file-name "~/")))
     (let* ((output-buffer "*async-completing-read*")
-           (fdfind-program (or (executable-find "fd")
-                               (executable-find "fdfind")))
+           (fdfind-program  (or (executable-find "fd")
+                                (executable-find "fdfind")))
            (args (if fdfind-program
-                     (list "--color=never" "-e" "png" "-E" "node_modules")
-                   (list "-type" "f" "-name" (prin1-to-string "*.png"))))
-           (last-pt 1)
-           (lines)
+                     (append
+                      (list "-0" "--color=never")
+                      (elfai--map-to-arguments
+                       "-e"
+                       elfai-image-allowed-file-extensions)
+                      (elfai--map-to-arguments "-E"
+                                               '("chromium" "chrome"
+                                                 "node_modules")))
+                   (list "-type" "f" "-name"
+                         "'*.png'")))
+           (async-time)
            (alist)
            (annotf
             (lambda (file)
               (concat (propertize " " 'display (list 'space :align-to 120))
                       (elfai--format-time-diff (cdr (assoc-string file
                                                                   alist))))))
-           (category 'file)
+           (proc)
            (update-fn
             (lambda ()
-              (when-let ((mini (active-minibuffer-window)))
-                (with-selected-window mini
-                  (insert "@")
-                  (call-interactively #'backward-delete-char)
-                  (pcase completing-read-function
-                    ('ivy-completing-read
-                     (when (and (fboundp 'ivy-update-candidates))
-                       (ivy-update-candidates (mapcar #'car alist))))
-                    ((guard (bound-and-true-p icomplete-mode))
-                     (when (and (bound-and-true-p icomplete-mode)
-                                (fboundp 'icomplete-exhibit))
-                       (icomplete-exhibit)))
-                    ('completing-read-default
-                     (unless (get-buffer-window "*Completions*")
-                       (when lines
-                         (minibuffer-completion-help))))
-                    (_
-                     (completion--flush-all-sorted-completions)))))))
-           (update-timer (run-with-timer
-                          0.3
-                          0.3
-                          update-fn)))
+              (let ((mini (active-minibuffer-window))
+                    (buff (get-buffer output-buffer)))
+                (when (buffer-live-p buff)
+                  (with-current-buffer (get-buffer output-buffer)
+                    (let ((new-lines (mapcar
+                                      (lambda (line)
+                                        (expand-file-name
+                                         line
+                                         default-directory))
+                                      (split-string
+                                       (buffer-string)
+                                       "\0"
+                                       t))))
+                      (setq alist (nconc alist
+                                         (elfai--files-to-sorted-alist
+                                          new-lines)))))
+                  (when mini
+                    (with-selected-window mini
+                      (insert "@")
+                      (call-interactively #'backward-delete-char)
+                      (pcase completing-read-function
+                        ('ivy-completing-read
+                         (when (and (fboundp 'ivy-update-candidates))
+                           (ivy-update-candidates (mapcar #'car alist))))
+                        ((guard (bound-and-true-p icomplete-mode))
+                         (when (and (bound-and-true-p icomplete-mode)
+                                    (fboundp 'icomplete-exhibit))
+                           (icomplete-exhibit)))
+                        (_
+                         (completion--flush-all-sorted-completions)))))))))
+           (time-to-wait 500000))
       (unwind-protect
           (progn
-            (apply
-             #'start-process "*async-completing-read*" output-buffer
-             (or
-              fdfind-program
-              "find")
-             args)
-            (elfai--completing-read-with-preview
-             (or prompt "Image: ")
-             (lambda (string pred action)
-               (if (eq action 'metadata)
-                   `(metadata
-                     (annotation-function
-                      .
-                      ,annotf)
-                     (category . ,category))
-                 (with-current-buffer
-                     "*async-completing-read*"
-                   (when (> (point-max)
-                            last-pt)
-                     (setq lines
-                           (append lines
-                                   (split-string
-                                    (let ((new-pt (point-max)))
-                                      (prog1
-                                          (buffer-substring last-pt new-pt)
-                                        (setq last-pt new-pt)))
-                                    "\n" 'omit-nulls)))
-                     (setq alist (elfai--files-to-sorted-alist
-                                  (mapcar
-                                   (lambda (line) (concat "~/" line))
-                                   lines)))))
-                 (complete-with-action
-                  action
-                  alist
-                  string
-                  pred)))
-             #'elfai--minibuffer-preview-file-action))
-        (when update-timer (cancel-timer update-timer))
+            (setq proc
+                  (apply
+                   #'start-process "*async-completing-read*" output-buffer
+                   (or
+                    fdfind-program
+                    (executable-find "find"))
+                   args))
+            (setq async-time (current-time))
+            (set-process-sentinel proc
+                                  (lambda
+                                    (process _state)
+                                    (let ((proc-status (process-status process))
+                                          (buff (process-buffer process)))
+                                      (when (memq proc-status '(exit signal))
+                                        (when (buffer-live-p buff)
+                                          (funcall update-fn))))))
+            (set-process-filter
+             proc
+             (lambda
+               (process str)
+               (ignore-errors
+                 (let ((buff (process-buffer process)))
+                   (when (buffer-live-p buff)
+                     (with-current-buffer buff
+                       (insert str))
+                     (let ((update-enabled (time-less-p
+                                            (list 0 0
+                                                  time-to-wait)
+                                            (time-since
+                                             async-time))))
+                       (when update-enabled
+                         (condition-case nil
+                             (progn (funcall update-fn)
+                                    (setq async-time (current-time))
+                                    (setq time-to-wait (+ 500000 time-to-wait)))
+                           (error
+                            (setq async-time (current-time))
+                            (setq time-to-wait (* time-to-wait
+                                                  time-to-wait)))))))))))
+            (progn (display-buffer output-buffer)
+                   (elfai--completing-read-with-preview
+                    (or prompt "Image: ")
+                    (lambda (string pred action)
+                      (if (eq action 'metadata)
+                          `(metadata
+                            (annotation-function
+                             .
+                             ,annotf))
+                        (complete-with-action
+                         action
+                         (mapcar #'car alist)
+                         string
+                         pred)))
+                    #'elfai--minibuffer-preview-file-action
+                    elfai--multi-source-minibuffer-map
+                    #'file-exists-p)))
         (kill-buffer output-buffer)))))
 
-(defun elfai--fdfind-all-png-files ()
-  "Search for all PNG files in the home directory, excluding \"node_modules\"."
-  (let ((default-directory (expand-file-name "~/")))
-    (mapcar #'expand-file-name
-            (with-temp-buffer
-              (let ((status
-                     (call-process
-                      (or (executable-find "fd")
-                          (executable-find "fdfind"))
-                      nil t nil "-e" "png" "-E" "node_modules")))
-                (if (zerop status)
-                    (split-string (buffer-string) "\n" t)
-                  nil))))))
 
-(defun elfai--completing-read-all-images ()
-  "List and preview all PNG files with modification times for selection."
-  (let* ((files (elfai--files-to-sorted-alist
-                 (elfai--fdfind-all-png-files)))
-         (annotf
-          (lambda (file)
-            (concat (propertize " " 'display (list 'space :align-to 80))
-                    (elfai--format-time-diff (cdr (assoc-string file
-                                                                files))))))
-         (category 'file))
-    (elfai--completing-read-with-preview "Image: "
-                                         (lambda (str pred action)
-                                           (if (eq action 'metadata)
-                                               `(metadata
-                                                 (annotation-function . ,annotf)
-                                                 (category . ,category))
-                                             (complete-with-action action files
-                                                                   str pred)))
-                                         #'elfai--minibuffer-preview-file-action)))
+(defun elfai-get-xdg-dirs ()
+  "Return a list of user directories from the XDG configuration file."
+  (when
+      (require 'xdg nil t)
+    (when (and (fboundp 'xdg--user-dirs-parse-file)
+               (fboundp 'xdg-config-home))
+      (ignore-errors (mapcar #'cdr
+                             (xdg--user-dirs-parse-file
+                              (expand-file-name "user-dirs.dirs"
+                                                (xdg-config-home))))))))
 
 (defun elfai--completing-read-image ()
   "Choose an image file with completion and preview."
-  (let* ((dirs (elfai--get-active-directories))
+  (let* ((dirs (append (elfai--get-active-directories)
+                       (elfai-get-xdg-dirs)))
          (files (elfai--files-to-sorted-alist
                  (mapcan
                   (lambda (dir)
-                    (directory-files dir t
-                                     "\\.png\\'"))
+                    (directory-files
+                     dir t
+                     (concat "\\."
+                             (regexp-opt
+                              elfai-image-allowed-file-extensions)
+                             "\\'")))
                   (if (member (expand-file-name elfai-images-dir) dirs)
                       dirs
                     (seq-filter
@@ -1876,17 +2045,18 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
                     (elfai--format-time-diff (cdr (assoc-string file
                                                                 files))))))
          (category 'file))
-    (elfai--completing-read-with-preview "Image: "
-                                         (lambda (str pred action)
-                                           (if (eq action 'metadata)
-                                               `(metadata
-                                                 (annotation-function . ,annotf)
-                                                 (category . ,category))
-                                             (complete-with-action action files
-                                                                   str pred)))
-                                         #'elfai--minibuffer-preview-file-action)))
+    (elfai--completing-read-with-preview
+     "Image: "
+     (lambda (str pred action)
+       (if (eq action 'metadata)
+           `(metadata
+             (annotation-function . ,annotf)
+             (category . ,category))
+         (complete-with-action action files
+                               str pred)))
+     #'elfai--minibuffer-preview-file-action)))
 
-(defun elfai--read-image-from-multi-sources ()
+(defun elfai--read-image-from-multi-sources (&optional _arg)
   "Choose a PNG image from multiple sources with minibuffer completion."
   (elfai--completing-read-from-multi-source
    '((elfai--completing-read-image)
@@ -1899,15 +2069,8 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
                          (lambda (file)
                            (or (file-directory-p file)
                                (member (file-name-extension file)
-                                       '("png"))))))
+                                       elfai-image-allowed-file-extensions)))))
 
-(defvar elfai--multi-source-minibuffer-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C->") #'elfai--source-select-next)
-    (define-key map (kbd "C-j") #'elfai--preview-minibuffer-file)
-    (define-key map (kbd "C-<") #'elfai--multi-source-select-prev)
-    map)
-  "Keymap to use in minibuffer.")
 
 (defun elfai--completing-read-from-multi-source (sources)
   "Choose from multiple SOURCES with minibuffer completion.
@@ -1968,52 +2131,53 @@ Optional argument INITIAL specifies the initial input to the minibuffer.
 Optional argument PREDICATE, if non-nil, is a function that takes one argument
 \(a file name) and returns non-nil if that file name should be considered."
   (let* ((prev-file-buffs)
-         (preview-action (lambda (file)
-                           (when (and file
-                                      (file-exists-p file)
-                                      (file-readable-p file)
-                                      (not (file-directory-p file))
-                                      (not
-                                       (and large-file-warning-threshold
-                                            (let ((size
-                                                   (file-attribute-size
-                                                    (file-attributes
-                                                     (file-truename file)))))
-                                              (and size
-                                                   (> size
-                                                      large-file-warning-threshold)
-                                                   (message
-                                                    "File is too large (%s) for preview "
-                                                    size))))))
-                             (if-let ((buff (get-file-buffer
-                                             file)))
-                                 (unless (get-buffer-window
-                                          buff)
-                                   (with-selected-window
-                                       (let ((wind
-                                              (selected-window)))
-                                         (or
-                                          (window-right
-                                           wind)
-                                          (window-left
-                                           wind)
-                                          (split-window-sensibly)
-                                          wind))
-                                     (pop-to-buffer-same-window buff)))
-                               (with-selected-window
-                                   (let ((wind
-                                          (selected-window)))
-                                     (or
-                                      (window-right
-                                       wind)
-                                      (window-left
-                                       wind)
-                                      (split-window-sensibly)
-                                      wind))
-                                 (find-file file))
-                               (push (get-file-buffer
-                                      file)
-                                     prev-file-buffs))))))
+         (preview-action
+          (lambda (file)
+            (when (and file
+                       (file-exists-p file)
+                       (file-readable-p file)
+                       (not (file-directory-p file))
+                       (not
+                        (and large-file-warning-threshold
+                             (let ((size
+                                    (file-attribute-size
+                                     (file-attributes
+                                      (file-truename file)))))
+                               (and size
+                                    (> size
+                                       large-file-warning-threshold)
+                                    (message
+                                     "File is too large (%s) for preview "
+                                     size))))))
+              (if-let ((buff (get-file-buffer
+                              file)))
+                  (unless (get-buffer-window
+                           buff)
+                    (with-selected-window
+                        (let ((wind
+                               (selected-window)))
+                          (or
+                           (window-right
+                            wind)
+                           (window-left
+                            wind)
+                           (split-window-sensibly)
+                           wind))
+                      (pop-to-buffer-same-window buff)))
+                (with-selected-window
+                    (let ((wind
+                           (selected-window)))
+                      (or
+                       (window-right
+                        wind)
+                       (window-left
+                        wind)
+                       (split-window-sensibly)
+                       wind))
+                  (find-file file))
+                (push (get-file-buffer
+                       file)
+                      prev-file-buffs))))))
     (minibuffer-with-setup-hook
         (lambda ()
           (when (minibufferp)
@@ -2025,9 +2189,10 @@ Optional argument PREDICATE, if non-nil, is a function that takes one argument
               (use-local-map (make-composed-keymap map
                                                    (current-local-map))))
             (when preview-action
-              (add-hook 'after-change-functions (lambda (&rest _)
-                                                  (elfai--minibuffer-action-no-exit
-                                                   preview-action))
+              (add-hook 'after-change-functions
+                        (lambda (&rest _)
+                          (elfai--minibuffer-action-no-exit
+                           preview-action))
                         nil t))))
       (read-file-name prompt
                       dir
@@ -2124,7 +2289,8 @@ Remaining arguments ARGS are additional arguments passed to `completing-read'."
                                 'created
                                 (cdr (assoc str elfai-models-sorted)))))
                      (concat
-                      (propertize " " 'display `(space :align-to ,(or align 40)))
+                      (propertize " " 'display `(space :align-to
+                                                 ,(or align 40)))
                       (or (elfai--format-time-diff created) " ")))))
          (display-sort-fn #'elfai--sort-models-by-time)
          (collection (lambda (str pred action)
@@ -2275,12 +2441,12 @@ Argument MODEL is the new value to assign to the variable."
 
 ;;;###autoload
 (defun elfai-change-default-model (model)
-  "Set `elfai-gpt-model' to MODEL.
+  "Set `elfai-model' to MODEL.
 
 Argument MODEL is the name of the GPT model to set."
   (interactive (list
                 (elfai--completing-read-model "Model: ")))
-  (elfai-set-model 'elfai-gpt-model model))
+  (elfai-set-model 'elfai-model model))
 
 
 (defun elfai-get-region ()
@@ -2357,35 +2523,58 @@ defaults to 1."
 
 
 (defun elfai-send ()
-  "Send parsed buffer messages to an AI model for completion."
+  "Prepare the content of buffer before point and send it to AI model.
+
+This function prepares the buffer content and sends it to the AI model for
+processing.
+
+It handles the expansion of file links to their content,ensuring that the
+content sent to the model is accurate and up-to-date.
+
+During completion ongoing request can be cancelled by pressing `keyboard-quit'
+multiple times,as specified by the `elfai-abort-on-keyboard-quit-count'
+variable.
+
+The default value is 5, meaning that pressing `keyboard-quit` five
+times in quick succession will abort the request.
+
+Related Custom Variables:
+- `elfai-abort-on-keyboard-quit-count': Number of `keyboard-quit' presses before
+  aborting GPT requests.
+- `elfai-before-parse-buffer-hook': A hook that runs before parsing the buffer
+  for AI model completion.
+- `elfai-image-allowed-file-extensions': List of allowed file extensions for
+  image files."
   (interactive)
+  (run-hooks 'elfai-before-parse-buffer-hook)
   (let ((messages (save-excursion
                     (elfai--parse-buffer)))
         (inserter
          (if (and
               (derived-mode-p 'org-mode)
-              (progn
-                (require 'org-indent nil t)
-                (fboundp 'org-indent-refresh-maybe)))
+              (bound-and-true-p org-indent-mode)
+              (fboundp 'org-indent-refresh-maybe))
              (lambda (it)
                (let ((beg (point)))
                  (insert it)
                  (org-indent-refresh-maybe beg (point) nil)))
            #'insert))
         (req-data (list
-                   :model elfai-gpt-model
-                   :temperature elfai-gpt-temperature
+                   :model elfai-model
+                   :temperature elfai-temperature
                    :stream t)))
     (setq req-data (plist-put req-data :messages
                               (apply #'vector
                                      (cons (list
                                             :role "system"
-                                            :content (or (elfai-system-prompt)
-                                                         ""))
+                                            :content
+                                            (or
+                                             (elfai-system-prompt)
+                                             ""))
                                            messages))))
     (save-excursion
       (elfai--presend)
-      (elfai--update-status " Waiting" 'warning)
+      (elfai--update-status " Waiting" 'warning t)
       (elfai--stream-request
        req-data
        (lambda ()
@@ -2398,71 +2587,148 @@ defaults to 1."
                            (format
                             " Error: %s"
                             err)
-                           50)
+                           60)
                           'error))
        :inserter inserter))))
 
 
-;;;###autoload
-(define-minor-mode elfai-image-mode
-  "Runs elfai on file save when this mode is turned on."
-  :lighter " elfai-img"
-  :global nil
-  :keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c RET") #'elfai-send)
-    map)
-  (setq-local elfai-gpt-model elfai-image-model)
-  (cond (elfai-image-mode
-         (setq elfai-old-header-line header-line-format)
-         (setq header-line-format (elfai-get-header-line)))
-        (t (setq header-line-format elfai-old-header-line)
-           (setq elfai-old-header-line nil))))
+(defun elfai--get-major-mode (filename)
+  "Return the major mode associated with FILENAME, either from buffer or file.
 
-(put 'elfai-image-mode 'permanent-local t)
+Argument FILENAME is the name of the file for which to determine the major mode."
+  (or
+   (when-let ((buff
+               (get-file-buffer filename)))
+     (buffer-local-value 'major-mode buff))
+   (let ((fname (if (file-name-absolute-p filename)
+                    filename
+                  (expand-file-name filename default-directory))))
+     (with-temp-buffer
+       (ignore-errors
+         (let ((inhibit-message t)
+               (message-log-max nil)
+               (buffer-file-name fname))
+           (delay-mode-hooks (set-auto-mode t)
+                             major-mode)))))))
 
-(defvar org-link-types-re)
-(defun elfai--parse-image-data (content)
-  "Parse image data from CONTENT, replacing links with encoded images.
 
-Argument CONTENT is the string containing the image data to be parsed."
-  (require 'org)
+(defun elfai--major-mode-to-lang-name (sym)
+  "Return language name corresponding to the major mode symbol SYM.
+
+Argument SYM is the symbol representing the major mode."
+  (or
+   (when (boundp 'markdown-code-lang-modes)
+     (car (rassq sym markdown-code-lang-modes)))
+   (let ((name
+          (replace-regexp-in-string "\\(-ts\\)?-mode$" "" (symbol-name sym))))
+     (or
+      (elfai-get-org-language sym)
+      (replace-regexp-in-string "fundamental" "" name)))))
+
+(defun elfai--copy-file-to-attachment-dir (file-path)
+  "Copy FILE-PATH to `elfai-attachment-dir` and return the new path."
+  (let* ((file-name (file-name-nondirectory file-path))
+         (dest-dir (expand-file-name elfai-attachment-dir))
+         (dest-path))
+    (unless (file-directory-p dest-dir)
+      (make-directory dest-dir t))
+    (setq dest-path (elfai--uniqify-filename-with-counter
+                     (expand-file-name file-name
+                                       dest-dir)
+                     dest-dir))
+    (copy-file file-path dest-path
+               t)
+    dest-path))
+
+
+(defun elfai--parse-buffer-data ()
+  "Parse buffer content, extracting and categorizing text and links into data."
+  (require 'ol)
   (let ((data)
-        (img-count))
-    (with-temp-buffer
-      (insert content)
-      (while (re-search-backward
-              "\\[\\[\\(\\(?:[^][\\]\\|\\\\\\(?:\\\\\\\\\\)*[][]\\|\\\\+[^][]\\)+\\)]\\(?:\\[\\([^z-a]+?\\)]\\)?]"
-              nil t 1)
-        (when-let ((image-file (match-string-no-properties 1)))
-          (replace-match "" nil nil nil 0)
-          (let ((file (if org-link-types-re
-                          (replace-regexp-in-string org-link-types-re
-                                                    "" image-file)
-                        image-file)))
-            (when (and (file-exists-p file)
-                       (member (file-name-extension image-file) '("png" "jpg"
-                                                                  "jpeg")))
-              (setq img-count (1+ (or img-count 0)))
-              (elfai--debug 'image-found "%d %s" img-count image-file)
-              (let ((props `(:type
-                             "image_url"
-                             :image_url
-                             (:url ,(elfai--encode-image
-                                     (replace-regexp-in-string org-link-types-re
-                                      "" image-file))))))
-                (push props data))))))
-      (push `(:type
-              "text"
-              :text
-              ,(replace-regexp-in-string
-                (concat "^"
-                 (regexp-quote elfai-user-prompt-prefix))
-                ""
-                (elfai--include-files
-                 (string-trim (buffer-string)))))
-            data))
-    (apply #'vector data)))
+        (link-re (org-link-make-regexps))
+        (content-beg (point-min))
+        (content-end)
+        (content))
+    (save-excursion
+      (goto-char (point-min))
+      (let ((add-text-elem
+             (lambda (str)
+               (unless (string-empty-p str)
+                 (let ((prev-elem (car-safe data))
+                       (text (if (string-match-p "^[ \t]*#\\+INCLUDE:" str)
+                                 (elfai--include-files str)
+                               str)))
+                   (cond ((and prev-elem
+                               (plist-get prev-elem :type)
+                               (equal (plist-get prev-elem :type)
+                                      "text"))
+                          (setq prev-elem (plist-put
+                                           prev-elem
+                                           :text
+                                           (concat
+                                            (plist-get prev-elem :text)
+                                            text))))
+                         (t (push `(:type "text"
+                                    :text ,text)
+                                  data))))))))
+        (while (re-search-forward link-re nil t 1)
+          (let ((link (or (match-string-no-properties 2)
+                          (match-string-no-properties 1)
+                          (match-string-no-properties 0)))
+                (beg (match-beginning 0))
+                (end (match-end 0))
+                (description (match-string-no-properties 3)))
+            (let ((file
+                   (when link
+                     (let ((link-path (replace-regexp-in-string
+                                       org-link-types-re
+                                       "" link)))
+                       (when (and (not (string-empty-p link-path))
+                                  (file-exists-p link-path)
+                                  (not (file-directory-p link-path)))
+                         link-path)))))
+              (setq content-end (if file beg end))
+              (setq content (string-trim
+                             (buffer-substring-no-properties content-beg
+                                                             content-end)))
+              (setq content-beg end)
+              (setq content-end nil)
+              (funcall add-text-elem content)
+              (cond ((or (not file)
+                         (member (file-name-extension file)
+                                 elfai-non-embeddable-file-extensions)))
+                    ((member (file-name-extension file)
+                             elfai-image-allowed-file-extensions)
+                     (let ((props `(:type
+                                    "image_url"
+                                    :image_url
+                                    (:url
+                                     ,(elfai--encode-image
+                                       (replace-regexp-in-string
+                                        org-link-types-re
+                                        "" file))))))
+                       (push props data)))
+                    (t
+                     (let* ((text (concat
+                                   (or description link file)
+                                   ":\n"
+                                   (let ((lang
+                                          (elfai--major-mode-to-lang-name
+                                           (elfai--get-major-mode
+                                            file))))
+                                     (with-temp-buffer
+                                       (insert-file-contents file)
+                                       (concat "```" lang "\n"
+                                               (buffer-string)
+                                               "\n```")))))
+                            (props `(:type "text"
+                                     :text ,text)))
+                       (push props data)))))))
+        (setq content (string-trim
+                       (buffer-substring-no-properties (point) (point-max))))
+        (funcall add-text-elem content)))
+    (nreverse data)))
+
 
 (declare-function org-export-expand-include-keyword "ox")
 
@@ -2476,18 +2742,145 @@ keywords to be expanded."
   (with-temp-buffer
     (let ((tab-width 8))
       (insert content)
-      (org-export-expand-include-keyword)
-      (buffer-substring-no-properties (point-min)
-                                      (point-max)))))
+      (condition-case err
+          (progn (org-export-expand-include-keyword)
+                 (buffer-substring-no-properties
+                  (point-min)
+                  (point-max)))
+        (error (message "Elfai: Couldn't expand #+INCLUDE directive: %s" err)
+               content)))))
 
-(defun elfai--plist-p (list)
-  "Non-nil if and only if LIST is a plist of keywords and values."
-  (when
-      (let ((len (proper-list-p list)))
-        (and len (zerop (% len 2))))
-    (while (and (keywordp (car-safe list))
-                (setq list (cddr list))))
-    (null list)))
+
+(defun elfai--copy-file-contents-as-org-blocks (files)
+  "Convert file contents into org blocks based on file extension.
+
+Argument FILES is a list of strings, each representing the path to a file whose
+content will be extracted and formatted as an org block."
+  (mapconcat #'elfai--file-content-as-link
+             files
+             "\n\n"))
+
+(defun elfai--get-dired-marked-files ()
+  "Retrieve marked files from the active `dired-mode' buffer."
+  (require 'dired)
+  (when (fboundp 'dired-get-marked-files)
+    (when-let ((buff (seq-find (lambda
+                                 (buff)
+                                 (and (eq (buffer-local-value 'major-mode buff)
+                                          'dired-mode)
+                                      (get-buffer-window buff)
+                                      (with-current-buffer buff
+                                        (dired-get-marked-files))))
+                               (delete-dups (append (mapcar #'window-buffer
+                                                            (window-list))
+                                                    (buffer-list))))))
+      (with-current-buffer buff
+        (dired-get-marked-files)))))
+
+(defun elfai--get-files-recoursively (files-or-dirs)
+  "Retrieve all files from given directories and files list recursively.
+
+Argument FILES-OR-DIRS is a list of files or directories."
+  (let ((files))
+    (dolist (file files-or-dirs)
+      (if (file-directory-p file)
+          (setq files
+                (nconc files
+                       (elfai--get-files-recoursively
+                        (directory-files
+                         file
+                         t
+                         directory-files-no-dot-files-regexp))))
+        (push file files)))
+    (nreverse files)))
+
+(defun elfai-copy-files-contents-as-org-blocks ()
+  "Copy file contents into Org-mode blocks."
+  (interactive)
+  (let* ((files (or (elfai--get-files-recoursively
+                     (elfai--get-dired-marked-files))
+                    (and buffer-file-name (list buffer-file-name))))
+         (str (elfai--copy-file-contents-as-org-blocks files)))
+    (kill-new str)
+    (message "Copied content of %s files" (length files))
+    str))
+
+(defun elfai--file-content-as-link (file)
+  "Get FILE content as org block with language based on file extension.
+
+Argument FILE is a string representing the path to the file whose content will
+be extracted and formatted as an org block."
+  (require 'project)
+  (let* ((parent-dir (file-name-parent-directory file))
+         (proj (ignore-errors
+                 (when (fboundp 'project-root)
+                   (project-root
+                    (project-current nil parent-dir)))))
+         (title (if proj
+                    (substring-no-properties
+                     (expand-file-name file)
+                     (length (expand-file-name proj)))
+                  (abbreviate-file-name file))))
+    (concat "- " (format "[[%s][%s]]" file title) "\n" "\n")))
+
+(defun elfai--expand-content (content)
+  "Expand CONTENT into a vector of parsed data elements.
+
+Argument CONTENT is the string containing the content to be expanded."
+  (require 'org)
+  (let ((data (with-temp-buffer
+                (insert content)
+                (elfai--parse-buffer-data))))
+    (apply #'vector data)))
+
+(defun elfai-copy-and-replace-user-links ()
+  "Replace user links with new paths after copying files to the elfai directory."
+  (let ((prop)
+        (link-re (org-link-make-regexps)))
+    (save-excursion
+      (while (and
+              (setq prop (text-property-search-backward
+                          'elfai 'response
+                          (when (get-char-property
+                                 (max (point-min) (1- (point)))
+                                 'elfai)
+                            t))))
+        (unless (prop-match-value prop)
+          (let ((user-start (prop-match-beginning prop))
+                (user-end (prop-match-end prop)))
+            (save-excursion
+              (goto-char user-end)
+              (while (re-search-backward link-re user-start t 1)
+                (let ((full-link (match-string-no-properties 0))
+                      (link (or (match-string-no-properties 2)
+                                (match-string-no-properties 1)
+                                (match-string-no-properties 0)))
+                      (beg (match-beginning 0))
+                      (end (match-end 0)))
+                  (let ((file
+                         (when link
+                           (let ((link-path (replace-regexp-in-string
+                                             org-link-types-re
+                                             "" link)))
+                             (when (and (not (string-empty-p link-path))
+                                        (file-exists-p link-path)
+                                        (not
+                                         (file-in-directory-p
+                                          link-path
+                                          elfai-attachment-dir))
+                                        (not (file-directory-p link-path)))
+                               link-path)))))
+                    (when file
+                      (let ((re (regexp-quote file))
+                            (full-path (elfai--copy-file-to-attachment-dir
+                                        (expand-file-name
+                                         file)))
+                            (rep))
+                        (setq rep
+                              (replace-regexp-in-string re full-path full-link))
+                        (delete-region beg end)
+                        (insert rep)))))))))))))
+
 
 
 (defun elfai--parse-buffer ()
@@ -2497,63 +2890,42 @@ keywords to be expanded."
     (while (and
             (setq prop (text-property-search-backward
                         'elfai 'response
-                        (when (get-char-property (max (point-min) (1- (point)))
-                                                 'elfai)
+                        (when (get-char-property
+                               (max (point-min) (1- (point)))
+                               'elfai)
                           t))))
-      (let ((role (if (prop-match-value prop) "assistant" "user")))
-        (push
-         (list
-          :role role
-          :content
-          (let ((content (buffer-substring-no-properties
-                          (prop-match-beginning
-                           prop)
-                          (prop-match-end
-                           prop))))
-            (pcase role
-              ("assistant"
-               (elfai--normalize-assistent-prompt content))
-              (_
-               (elfai--parse-image-data content)))))
-         prompts)))
+      (let* ((role (if (prop-match-value prop)
+                       "assistant" "user"))
+             (content (buffer-substring-no-properties
+                       (prop-match-beginning
+                        prop)
+                       (prop-match-end
+                        prop)))
+             (normalized-content
+              (funcall (if (string= role "assistant")
+                           #'elfai--normalize-assistent-prompt
+                         #'elfai--expand-content)
+                       content)))
+        (unless (and normalized-content
+                     (stringp normalized-content)
+                     (string-blank-p
+                      normalized-content))
+          (push
+           (list
+            :role role
+            :content normalized-content)
+           prompts))))
     (elfai--debug 'parse-buffer "%S" prompts)
     prompts))
-
-;;;###autoload
-(defun elfai-recognize-image (image-file prompt)
-  "Send an image to GPT-4 for recognition with a user prompt.
-
-Argument IMAGE-FILE is the path to the image file to be recognized.
-
-Argument PROMPT is the text prompt to accompany the image recognition request."
-  (interactive
-   (list (elfai--read-image-from-multi-sources)
-         (read-string "Prompt: "
-                      "What’s in this image? ")))
-  (display-buffer
-   (with-current-buffer (get-buffer-create "*Elfai-image*")
-     (unless (derived-mode-p 'org-mode)
-       (org-mode))
-     (visual-line-mode 1)
-     (unless (elfai-minor-mode-p 'elfai-image-mode)
-       (elfai-image-mode))
-     (goto-char (point-min))
-     (insert elfai-user-prompt-prefix prompt "\n" (format "[[%s]]" image-file)
-             "\n\n")
-     (elfai-send)
-     (current-buffer))
-   '((display-buffer-reuse-window
-      display-buffer-pop-up-window)
-     (reusable-frames . visible))))
 
 (defun elfai-get-header-line ()
   "Display a header line with model info and interactive buttons."
   (list
    '(:eval (concat (propertize " " 'display '(space :align-to 0))
-            (format "%s" elfai-gpt-model)))
+            (format "%s" elfai-model)))
    (propertize " Ready" 'face 'success)
    '(:eval
-     (let* ((l1 (length elfai-gpt-model))
+     (let* ((l1 (length elfai-model))
             (num-exchanges "[Send: buffer]")
             (l2 (length num-exchanges)))
       (concat
@@ -2570,32 +2942,133 @@ Argument PROMPT is the text prompt to accompany the image recognition request."
         "Send buffer")
        " "
        (propertize
-        (buttonize (concat "[" elfai-gpt-model "]")
+        (buttonize (concat "[" elfai-model "]")
          (lambda (&rest _)
            (elfai-menu)))
         'mouse-face 'highlight
         'help-echo "GPT model in use"))))))
 
 
-(defun elfai--update-status (&optional msg face)
-  "Update status MSG in FACE."
-  (when (or (elfai-minor-mode-p 'elfai-mode
-                                'elfai-image-mode))
-    (when (consp header-line-format)
-      (setf (nth 1 header-line-format)
-            (propertize msg 'face face)))))
+(defun elfai-update-header (msg face)
+  "Update the second element of `header-line-format' with a propertized message.
+
+Argument MSG is the message to be displayed in the header.
+
+Argument FACE is the face to be applied to the message.
+
+Optional argument _LOADING is an unused parameter."
+  (when (consp header-line-format)
+    (setf (nth 1 header-line-format)
+          (propertize msg 'face face))))
+
+(defun elfai-update-mode-line-process (msg face)
+  "Update the mode-line process with MSG and FACE, optionally indicating LOADING.
+
+Argument MSG is the message to display in the mode line.
+
+Argument FACE is the face property to apply to the message.
+
+Optional argument LOADING is a boolean indicating whether to show the loading
+message."
+  (if elfai-loading
+      (setq mode-line-process (propertize msg 'face face))
+    (setq mode-line-process
+          '(:eval (concat " "
+                   (buttonize elfai-model
+                    (lambda (&rest _) (elfai-menu))))))))
+
+(defun elfai--update-status (&optional msg face loading)
+  "Update the status indicator with MSG and FACE based on the current mode.
+
+Optional argument MSG is the message to be displayed.
+
+Optional argument FACE is the face property to style the message.
+
+Optional argument LOADING is a boolean indicating if a loading state should be
+shown."
+  (when (elfai-minor-mode-p 'elfai-mode)
+    (setq elfai-loading loading)
+    (run-hook-with-args 'elfai-status-indicator msg face)))
+
+;;;###autoload
+(defalias 'elfai-region-convervation #'elfai)
+
+;;;###autoload
+(defun elfai (&optional text buff-name)
+  "Start or switch to a chat session in the buffer BUFF-NAME.
+
+Optional argument TEXT is the text to be inserted at the top of the buffer.
+
+Optional argument BUFF-NAME is the name of the buffer where the initial
+TEXT will be inserted and `elfai-mode' activated, as well as `org-mode'."
+  (interactive
+   (list (elfai-get-region)
+         (let ((buffs (elfai--get-elfai-buffers)))
+           (if (or current-prefix-arg
+                   (length> buffs 1))
+               (elfai--read-buffer  "Buffer: ")
+             (or (car buffs)
+                 "*Elfai response*")))))
+  (let* ((lang
+          (when text (elfai-get-org-language
+                      major-mode)))
+         (wind-pos)
+         (buffer (with-current-buffer (get-buffer-create buff-name)
+                   (unless (symbol-value 'elfai-mode)
+                     (elfai-mode))
+                   (setq-local elfai-model elfai-model)
+                   (cond (text
+                          (goto-char (point-min))
+                          (let ((pos
+                                 (save-excursion
+                                   (when (looking-at (regexp-quote
+                                                      elfai-user-prompt-prefix))
+                                     (re-search-forward
+                                      (regexp-quote
+                                       elfai-user-prompt-prefix)
+                                      nil t 1)))))
+                            (if (and pos
+                                     (string-empty-p
+                                      (string-trim
+                                       (buffer-substring-no-properties
+                                        pos
+                                        (point-max)))))
+                                (goto-char pos)
+                              (insert elfai-user-prompt-prefix)))
+                          (setq wind-pos (point))
+                          (save-excursion
+                            (insert "\n\n"
+                                    (if (not text)
+                                        ""
+                                      (if lang
+                                          (concat (concat "#+begin_src " lang
+                                                          "\n"
+                                                          text "\n"
+                                                          "#+end_src"))
+                                        (concat "#+begin_example\n" text
+                                                "\n#+end_example")))
+                                    "\n\n"))))
+                   (current-buffer))))
+    (let ((wnd (or (get-buffer-window buffer)
+                   (elfai--get-other-wind))))
+      (select-window wnd)
+      (pop-to-buffer-same-window buffer)
+      (when wind-pos
+        (set-window-point wnd wind-pos)))
+    buffer))
 
 
 ;;;###autoload
 (define-minor-mode elfai-mode
-  "Send buffer messages to an AI model for completion with a keybinding.
+  "Enable AI-assisted text generation and image handling in Org-mode buffers.
 
-Enable interaction with an AI model by sending parsed buffer messages for
-completion.
+Enable enhanced language model interactions by providing key bindings and hooks
+for sending buffer content to an AI model.
 
-This mode facilitates the integration of AI-driven completions into your
-workflow, leveraging a specified AI model for generating responses based on the
-provided input."
+Activate Org mode if not already active, and set up Org link parameters for
+image handling. Customize the header line to display model information and
+interactive buttons. Manage state restoration and saving through hooks, and
+handle AI model requests with customizable parameters."
   :lighter " elfai"
   :global nil
   :keymap
@@ -2603,10 +3076,16 @@ provided input."
     (define-key map (kbd "C-c RET") #'elfai-send)
     map)
   (cond (elfai-mode
-         (org-mode)
-         (visual-line-mode 1)
+         (add-hook 'org-font-lock-hook #'elfai--restore-state nil t)
+         (unless (derived-mode-p 'org-mode)
+           (org-mode))
+         (when (and (fboundp 'org-link-set-parameters)
+                    (fboundp 'org-link-complete-file))
+           (org-link-set-parameters
+            "elfai-image"
+            :complete #'elfai--read-image-from-multi-sources
+            :follow #'org-link-open-as-file))
          (add-hook 'before-save-hook #'elfai--save-state nil t)
-         (elfai--restore-state)
          (setq elfai-old-header-line header-line-format)
          (setq header-line-format (elfai-get-header-line)))
         (t
@@ -2636,13 +3115,10 @@ provided input."
     wind-target))
 
 (defun elfai--get-elfai-buffers ()
-  "Return a list of buffers where `elfai-mode' or `elfai-image-mode' is active."
+  "Return a list of buffers where `elfai-mode' is active."
   (let ((buffers))
     (dolist (buff (buffer-list))
-      (when (or
-             (buffer-local-value 'elfai-mode buff)
-             (buffer-local-value 'elfai-image-mode
-                                 (get-buffer buff)))
+      (when (buffer-local-value 'elfai-mode buff)
         (push buff buffers)))
     buffers))
 
@@ -2664,79 +3140,36 @@ Argument BUFFER is the path to the buffer to preview."
              (split-window-sensibly) wind))
         (pop-to-buffer-same-window buffer)))))
 
-(defun elfai--read-elfai-buffer ()
-  "Read the name of a elfai buffer and return it as a string."
+(defun elfai--read-buffer (prompt &optional keymap predicate)
+  "PROMPT for a buffer name from a list of buffers with `elfai-mode'.
+
+Argument PROMPT is a string used to prompt the user.
+
+Optional argument KEYMAP is a keymap to use during completion.
+
+Optional argument PREDICATE is a function to filter buffer names."
   (let* ((buffers (elfai--get-elfai-buffers))
          (buff-names (mapcar #'buffer-name buffers))
          (category 'buffer))
-    (elfai--completing-read-with-preview "Buffer: "
-                                         (lambda (str pred action)
-                                           (if (eq action 'metadata)
-                                               `(metadata
-                                                 (category . ,category))
-                                             (complete-with-action action
-                                                                   buff-names
-                                                                   str pred)))
-                                         #'elfai--minibuffer-preview-buffer-action)))
+    (elfai--completing-read-with-preview
+     prompt
+     (lambda (str pred action)
+       (if (eq action 'metadata)
+           `(metadata
+             (category . ,category))
+         (complete-with-action action
+                               buff-names
+                               str pred)))
+     #'elfai--minibuffer-preview-buffer-action
+     keymap
+     predicate)))
 
-;;;###autoload
-(defun elfai-region-convervation (&optional text buff-name)
-  "Insert TEXT into a buffer, optionally creating or selecting a buffer.
+(defun elfai-switch-to-buffer ()
+  "Switch to another window displaying a buffer selected via completion."
+  (interactive)
+  (switch-to-buffer-other-window
+   (elfai--read-buffer "Buffer: ")))
 
-Optional argument TEXT is the text from the current active region or nil.
-
-Optional argument BUFF-NAME is the name of the buffer to create or choose."
-  (interactive
-   (list (elfai-get-region)
-         (if current-prefix-arg
-             (elfai--read-elfai-buffer)
-           (or (car (elfai--get-elfai-buffers))
-               "*Elfai response*"))))
-  (let* ((lang
-          (when text (elfai-get-org-language)))
-         (wind-pos)
-         (buffer (with-current-buffer (get-buffer-create buff-name)
-                   (unless (symbol-value 'elfai-mode)
-                     (elfai-mode))
-                   (setq-local elfai-gpt-model elfai-gpt-model)
-                   (cond (text
-                          (goto-char (point-min))
-                          (let ((pos
-                                 (save-excursion
-                                   (when (looking-at (regexp-quote
-                                                      elfai-user-prompt-prefix))
-                                     (re-search-forward
-                                      (regexp-quote
-                                       elfai-user-prompt-prefix)
-                                      nil t 1)))))
-                            (if (and pos
-                                     (string-empty-p
-                                      (string-trim (buffer-substring-no-properties
-                                                    pos
-                                                    (point-max)))))
-                                (goto-char pos)
-                              (insert elfai-user-prompt-prefix)))
-                          (setq wind-pos (point))
-                          (save-excursion
-                            (insert "\n"
-                                    (if (not text)
-                                        ""
-                                      (if lang
-                                          (concat (concat "#+begin_src " lang
-                                                          "\n"
-                                                          text "\n"
-                                                          "#+end_src"))
-                                        (concat "#+begin_example\n" text
-                                                "\n#+end_example")))
-                                    "\n\n"))))
-                   (current-buffer))))
-    (let ((wnd (or (get-buffer-window buffer)
-                   (elfai--get-other-wind))))
-      (select-window wnd)
-      (pop-to-buffer-same-window buffer)
-      (when wind-pos
-        (set-window-point wnd wind-pos)))
-    buffer))
 
 (defun elfai--get-error-from-overlay (ov)
   "Extract error details from an overlay, supporting Flymake and Flycheck.
@@ -2793,8 +3226,9 @@ Argument OV is an overlay object."
                                         (goto-char beg)
                                         (ignore-errors
                                           (comment-region beg end)))))
-                    (throw 'content (buffer-substring-no-properties (point-min)
-                                                                    (point-max)))))
+                    (throw 'content (buffer-substring-no-properties
+                                     (point-min)
+                                     (point-max)))))
     (delete-region (point-min)
                    (point-max))
     (insert orig-content)
@@ -2802,7 +3236,7 @@ Argument OV is an overlay object."
     (let ((elfai-user-prompt-prefix
            (concat elfai-user-prompt-prefix
                    "Fix the errors, described in comments")))
-      (elfai-region-convervation content))))
+      (elfai content))))
 
 ;;;###autoload
 (defun elfai-discuss-error-at-point ()
@@ -2831,42 +3265,21 @@ Argument OV is an overlay object."
       (let ((elfai-user-prompt-prefix
              (concat elfai-user-prompt-prefix
                      "Fix the errors, described in comments")))
-        (elfai-region-convervation
+        (elfai
          (elfai--get-content-with-cursor placeholder))))))
 
-(defun elfai--overlay-make (start end &optional buffer front-advance
-                                  rear-advance &rest props)
-  "Create a new overlay with range BEG to END in BUFFER and return it.
-If omitted, BUFFER defaults to the current buffer.
-START and END may be integers or markers.
-
-The fifth arg REAR-ADVANCE, if non-nil, makes the marker
-for the rear of the overlay advance when text is inserted there
-\(which means the text *is* included in the overlay).
-PROPS is a plist to put on overlay."
-  (let ((overlay (make-overlay start end buffer front-advance
-                               rear-advance)))
-    (dotimes (idx (length props))
-      (when (eq (logand idx 1) 0)
-        (let* ((prop-name (nth idx props))
-               (val (plist-get props prop-name)))
-          (overlay-put overlay prop-name val))))
-    overlay))
-
-(defun elfai--remove-overlays ()
-  "Remove all `elfai' property overlays from the current buffer."
-  (let ((ovs (car (overlay-lists))))
-    (dolist (ov ovs)
-      (when (overlay-get ov 'elfai)
-        (delete-overlay ov)))))
 
 (defvar org-src-lang-modes)
-(defun elfai-get-org-language ()
-  "Return the Org mode language associated with the current major mode."
+
+(defun elfai-get-org-language (mode)
+  "Return the corresponding Org language for a given major mode.
+
+Argument MODE is the major mode or a string representing the mode name."
   (require 'org)
-  (let* ((mode-name (symbol-name
-                     major-mode))
-         (mode (replace-regexp-in-string "-mode$" "" mode-name))
+  (let* ((mode-name (if (stringp mode)
+                        mode
+                      (symbol-name major-mode)))
+         (mode-str (replace-regexp-in-string "-mode$" "" mode-name))
          (no-ts-mode
           (replace-regexp-in-string "-\\(ts-\\)?mode$" ""
                                     mode-name)))
@@ -2877,9 +3290,9 @@ PROPS is a plist to put on overlay."
                            (lang-str (if (stringp lang)
                                          lang
                                        (format "%s" lang))))
-                       (or (string= str mode)
+                       (or (string= str mode-str)
                            (string= str no-ts-mode)
-                           (string= mode lang-str)
+                           (string= mode-str lang-str)
                            (string= no-ts-mode lang-str))))
                    org-src-lang-modes))))
 
@@ -2888,7 +3301,7 @@ PROPS is a plist to put on overlay."
   "Toggle monitoring `keyboard-quit' commands for aborting GPT requests.
 
 Enable `elfai-abort-mode' to monitor and handle `keyboard-quit'
-commands for aborting GPT documentation requests.
+commands for aborting GPT requests.
 
 When active, pressing `\\[keyboard-quit]' multiple times can trigger the
 cancellation of ongoing documentation generation processes.
@@ -2921,16 +3334,8 @@ Remaining arguments MODES are symbols representing minor modes."
            (1- (length switch-list))))))
 
 (defun elfai-system-prompt ()
-  "Return the current system prompt from `elfai-system-prompts'."
-  (nth elfai-curr-prompt-idx elfai-system-prompts))
-
-(defun elfai-gpt-temperature-description ()
-  "Format and return the current GPT model temperature setting."
-  (concat "Temperature: "
-          (propertize
-           (format "%s" elfai-gpt-temperature)
-           'face
-           'transient-value)))
+  "Return the current system prompt from `elfai-system-prompt-alist'."
+  (cdr (nth elfai-curr-prompt-idx elfai-system-prompt-alist)))
 
 (defun elfai--get-buffer-bounds ()
   "Return the elfai response boundaries in the buffer as an alist."
@@ -2947,15 +3352,12 @@ Remaining arguments MODES are symbols representing minor modes."
                 bounds))
         bounds))))
 
-(defun elfai--restore-text-props ()
-  "Restore text properties for response regions in the `elfai--bounds' list."
-  (pcase-dolist (`(,beg . ,end) elfai--bounds)
-    (add-text-properties beg end elfai-props-indicator)))
-
-(defun elfai--restore-state ()
-  "Restore gptel state when turning on `gptel-mode'."
+(defun elfai--restore-state (&rest _)
+  "Restore text properties for response regions in `elfai--bounds' list."
+  (remove-hook 'org-font-lock-hook #'elfai--restore-state t)
   (when (buffer-file-name)
-    (elfai--restore-text-props)))
+    (pcase-dolist (`(,beg . ,end) elfai--bounds)
+      (add-text-properties beg end elfai-props-indicator))))
 
 (defun elfai--save-state ()
   "Write the gptel state to the buffer.
@@ -2966,16 +3368,12 @@ opening the file."
   (save-excursion
     (save-restriction
       (widen)
-      (let ((items `(elfai-gpt-model elfai-gpt-temperature
+      (let ((items `(elfai-model elfai-temperature
                      elfai-curr-prompt-idx
-                     elfai-system-prompts
-                     (eval . ,(if (elfai-minor-mode-p 'elfai-image-mode)
-                                  `(progn
-                                     (require 'elfai)
-                                     (elfai-image-mode 1))
-                                `(progn
-                                   (require 'elfai)
-                                   (elfai-mode 1)))))))
+                     elfai-system-prompt-alist
+                     (eval . ,`(progn
+                                 (require 'elfai)
+                                 (elfai-mode 1))))))
         (dolist (item items)
           (pcase item
             ((pred (symbolp))
@@ -2996,132 +3394,225 @@ opening the file."
       (add-file-local-variable 'elfai--bounds (elfai--get-buffer-bounds)))))
 
 
+(defun elfai--uniqify-filename-with-counter (file dest-dir)
+  "Generate a unique filename with a counter suffix in the specified directory.
+
+Argument FILE is the name of the file to be processed.
+
+Argument DEST-DIR is the directory where the FILE will be saved."
+  (let* ((ext (file-name-extension file))
+         (basename (file-name-base file))
+         (file-regex (concat "\\`"
+                             (regexp-quote basename)
+                             (if ext
+                                 (concat "\\(-[0-9]+\\)" "\\." ext "\\'")
+                               "\\(-[0-9]+\\)\\'")))
+         (max-count 0)
+         (new-name))
+    (dolist (filename (directory-files dest-dir
+                                       nil
+                                       file-regex))
+      (let ((count
+             (string-to-number (car (last (split-string
+                                           (file-name-base
+                                            filename)
+                                           "-" t))))))
+        (when (> count max-count)
+          (setq max-count count))))
+    (setq new-name (string-join
+                    (delq nil (list (format "%s-%d" basename max-count)
+                                    (and ext (concat "." ext))))
+                    ""))
+    (while (file-exists-p (expand-file-name new-name
+                                            dest-dir))
+      (setq max-count (1+ max-count))
+      (setq new-name (string-join
+                      (delq nil (list (format "%s-%d" basename max-count)
+                                      (and ext (concat "." ext))))
+                      "")))
+    (expand-file-name new-name dest-dir)))
+
+
+(defun elfai--system-prompt-description ()
+  "Return a formatted string of system prompt with the current prompt highlighted."
+  (let ((current (elfai-system-prompt)))
+    (mapconcat (pcase-lambda (`(,label . ,value))
+                 (let ((face (if (and current (string= current value))
+                                 'transient-value
+                               'transient-inactive-value))
+                       (truncatted
+                        (let ((len (string-width label))
+                              (suffix "..."))
+                          (prin1-to-string
+                           (cond ((>= len 40)
+                                  (concat (substring-no-properties label 0 40)
+                                          suffix))
+                                 (t (substring-no-properties label)))))))
+                   (propertize truncatted 'face face)))
+               elfai-system-prompt-alist (propertize "|" 'face
+                                                'transient-inactive-value))))
+
+(transient-define-suffix elfai-next-system-prompt ()
+  "Choose next system prompt."
+  :description (lambda ()
+                 (concat "Next "
+                         (elfai--system-prompt-description)))
+  :inapt-if-nil 'elfai-system-prompt-alist
+  :transient t
+  (interactive)
+  (setq elfai-curr-prompt-idx
+        (elfai--index-switcher 1
+                               elfai-curr-prompt-idx
+                               elfai-system-prompt-alist)))
+
+(transient-define-suffix elfai-prev-system-prompt ()
+  "Choose previous system prompt."
+  :inapt-if-nil 'elfai-system-prompt-alist
+  :description (lambda ()
+                 (concat "Prev "
+                         (elfai--system-prompt-description)))
+  :transient t
+  (interactive)
+  (setq elfai-curr-prompt-idx
+        (elfai--index-switcher -1
+                               elfai-curr-prompt-idx
+                               elfai-system-prompt-alist)))
+
+(transient-define-suffix elfai-add-system-prompt (&optional initial-str)
+  "Add a new system prompt to `elfai-system-prompt-alist' and update the current index."
+  :description "Add"
+  :transient nil
+  (interactive (list (elfai-get-region)))
+  (string-edit
+   "New system prompt: "
+   (or initial-str "")
+   (lambda (edited)
+     (let* ((label (read-string "Short description: "))
+            (item (cons label edited)))
+       (add-to-list 'elfai-system-prompt-alist item)
+       (let ((idx
+              (seq-position elfai-system-prompt-alist item)))
+         (setq elfai-curr-prompt-idx idx)
+         (message "New system prompt added and setted"))))
+   :abort-callback (lambda ())))
+
+(transient-define-suffix elfai-edit-system-prompt ()
+  "Edit a system prompt to `elfai-system-prompt-alist' and update the current index."
+  :description "Edit"
+  :inapt-if-nil 'elfai-system-prompt-alist
+  :transient nil
+  (interactive)
+  (let ((cell (nth elfai-curr-prompt-idx elfai-system-prompt-alist)))
+    (string-edit
+     "Edit system prompt: "
+     (cdr cell)
+     (lambda (edited)
+       (setcdr cell edited)
+       (setcar cell (read-string "Short description: " (car cell)))
+       (message "Prompt edited"))
+     :abort-callback (lambda ()))))
+
+(transient-define-suffix elfai-delete-system-prompt ()
+  "Delete a system prompt to `elfai-system-prompt-alist' and update the current index."
+  :description "Delete"
+  :inapt-if-nil 'elfai-system-prompt-alist
+  :transient t
+  (interactive)
+  (setq elfai-system-prompt-alist
+        (remove (nth elfai-curr-prompt-idx elfai-system-prompt-alist)
+                elfai-system-prompt-alist)))
+
+(transient-define-suffix elfai-increase-temperature ()
+  :description (lambda ()
+                 (concat "Increase temperature "
+                         (propertize
+                          (format "(%s)" elfai-temperature)
+                          'face
+                          'transient-value)))
+  :transient t
+  (interactive)
+  (setq elfai-temperature
+        (string-to-number
+         (format "%.1f"
+                 (min
+                  (+
+                   (string-to-number
+                    (format "%.1f"
+                            (float (or
+                                    elfai-temperature
+                                    0))))
+                   0.1)
+                  2.0)))))
+
+(transient-define-suffix elfai-decrease-temperature ()
+  :description (lambda ()
+                 (concat "Decrease temperature "
+                         (propertize
+                          (format "(%s)" elfai-temperature)
+                          'face
+                          'transient-value)))
+  :transient t
+  (interactive)
+  (setq elfai-temperature
+        (string-to-number
+         (format "%.1f"
+                 (max
+                  (-
+                   (string-to-number
+                    (format "%.1f"
+                            (float (or
+                                    elfai-temperature
+                                    0))))
+                   0.1)
+                  0.0)))))
+
+(defun elfai-model-description ()
+  "Return a formatted string describing the current GPT model."
+  (format "Model: (%s)"
+          (propertize (substring-no-properties
+                       elfai-model)
+                      'face
+                      'transient-value)))
 
 ;;;###autoload (autoload 'elfai-menu "elfai" nil t)
 (transient-define-prefix elfai-menu ()
   "Provide a menu for various AI-powered text and image processing functions."
   :refresh-suffixes t
-  [["At point"
-    ("a" "Ask and insert"
-     elfai-ask-and-insert :inapt-if-non-nil buffer-read-only)
-    ("h" "Complete" elfai-complete-here :inapt-if-non-nil buffer-read-only)
+  [["Actions"
+    ("r" "Start session" elfai)
+    ("h" "Complete at point (send all buffer)" elfai-complete-here
+     :inapt-if-non-nil buffer-read-only)
     ("." "Complete (send region before point)"
      elfai-complete-with-partial-context
      :inapt-if-non-nil buffer-read-only)
-    ("r" "On Region" elfai-region-convervation)]
-   ["Images"
-    ("i" "Recognize image" elfai-recognize-image)
-    ("g" "Generate images" elfai-generate-images-batch)]]
+    ("a" "Ask and insert"
+     elfai-ask-and-insert :inapt-if-non-nil buffer-read-only)
+    ("g" "Generate images" elfai-generate-images-batch)
+    ""
+    ("b" "change buffer" elfai-switch-to-buffer)]
+   ["Settings"
+    ("m" elfai-change-default-model
+     :description elfai-model-description)
+    ("<up>" elfai-increase-temperature)
+    ("<down>" elfai-decrease-temperature)]]
   [[:description (lambda ()
-                   (let ((prompt (or (elfai-system-prompt)
-                                     "")))
-                     (concat "System prompt: "
-                             (truncate-string-to-width
-                              (with-temp-buffer
-                                (insert prompt)
-                                (fill-region (point-min)
-                                             (point-max))
-                                (buffer-string))
-                              80
-                              nil
-                              nil
-                              t))))
-    ("p" "Previous system prompt"
-     (lambda ()
-       (interactive)
-       (setq elfai-curr-prompt-idx
-             (elfai--index-switcher -1
-                                    elfai-curr-prompt-idx
-                                    elfai-system-prompts)))
-     :transient t)
-    ("n" "Next system prompt"
-     (lambda ()
-       (interactive)
-       (setq elfai-curr-prompt-idx
-             (elfai--index-switcher 1
-                                    elfai-curr-prompt-idx
-                                    elfai-system-prompts)))
-     :transient t)
-    ("SPC" "Add system prompt"
-     (lambda ()
-       (interactive)
-       (string-edit
-        "New system prompt: "
-        ""
-        (lambda (edited)
-          (add-to-list 'elfai-system-prompts edited)
-          (when-let ((idx
-                      (seq-position elfai-system-prompts edited)))
-            (setq elfai-curr-prompt-idx idx))
-          (transient-setup #'elfai-menu))
-        :abort-callback (lambda ())))
-     :transient nil)
-    ("e" "Edit system prompt"
-     (lambda ()
-       (interactive)
-       (string-edit
-        "Edit system prompt: "
-        (nth elfai-curr-prompt-idx
-             elfai-system-prompts)
-        (lambda (edited)
-          (setf (nth elfai-curr-prompt-idx elfai-system-prompts)
-                edited)
-          (transient-setup #'elfai-menu))
-        :abort-callback (lambda ())))
-     :transient nil)
-    ("D" "Delete current system prompt"
-     (lambda ()
-       (interactive)
-       (setq elfai-system-prompts
-             (remove (nth elfai-curr-prompt-idx elfai-system-prompts)
-                     elfai-system-prompts)))
-     :transient t)
+                   (let ((prompt (car (split-string
+                                       (or (elfai-system-prompt) "")
+                                       "[\n\r\f]+" t))))
+                     (if prompt
+                         (format "System prompt\n\s%s"
+                                 (truncate-string-to-width prompt 45 nil nil t))
+                       "System prompt\n")))
+    ("p" elfai-prev-system-prompt)
+    ("n" elfai-next-system-prompt)
+    ("+" elfai-add-system-prompt)
+    ("-" elfai-delete-system-prompt)
+    ("e" elfai-edit-system-prompt)
     ("C-x C-w" "Save prompts"
      (lambda ()
        (interactive)
-       (customize-save-variable
-        'elfai-system-prompts
-        elfai-system-prompts))
-     :transient t)
-    ("m" elfai-change-default-model
-     :description
-     (lambda ()
-       (format "Model: %s"
-               (propertize (substring-no-properties elfai-gpt-model)
-                           'face
-                           'transient-value))))
-    ("<up>"
-     (lambda ()
-       (interactive)
-       (setq elfai-gpt-temperature
-             (string-to-number
-              (format "%.1f"
-                      (min
-                       (+
-                        (string-to-number
-                         (format "%.1f"
-                                 (float (or
-                                         elfai-gpt-temperature
-                                         0))))
-                        0.1)
-                       2.0)))))
-     :description elfai-gpt-temperature-description
-     :transient t)
-    ("<down>" (lambda ()
-                (interactive)
-                (setq elfai-gpt-temperature
-                      (string-to-number
-                       (format "%.1f"
-                               (max
-                                (-
-                                 (string-to-number
-                                  (format "%.1f"
-                                          (float (or
-                                                  elfai-gpt-temperature
-                                                  0))))
-                                 0.1)
-                                0.0)))))
-     :description elfai-gpt-temperature-description
+       (customize-save-variable 'elfai-system-prompt-alist
+                                elfai-system-prompt-alist))
      :transient t)]])
 
 
