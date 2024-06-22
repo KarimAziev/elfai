@@ -2,23 +2,32 @@
 
 * About
 
-=elfai= is an Emacs package that provides an interface to OpenAI's GPT models. 
+=elfai.el= is an Emacs package that provides an interface to OpenAI's GPT models. It offers a variety of commands to interact with GPT models, including text completion, image generation, and more. It is heavily inspired by [[https://github.com/karthink/gptel][gptel]], but it focuses on expanding file links and images to be included in the prompt.
 
-#+begin_quote
-[!WARNING]
+[[./elfai-demo.gif]]
 
-This project is currently under development.
-#+end_quote
+** Key Features
+
+- *Expand File Links*: Automatically expand file links included in the prompt to their actual content.
+- *Embed Images*: Embed images directly within prompts and convert them to base64 format.
+- *Expand #+INCLUDE Directives*: Include file content in the prompt.
+- *Generate Images*: Generate images using OpenAI's API.
+- *Abort Requests*: Abort ongoing requests.
+- *Transient Interface*: Integrate transient interface for easy command access.
 
 
 * Table of Contents                                       :TOC_2_gh:QUOTE:
 #+BEGIN_QUOTE
 - [[#about][About]]
+  - [[#key-features][Key Features]]
 - [[#requirements][Requirements]]
 - [[#installation][Installation]]
   - [[#with-use-package-and-straightel][With use-package and straight.el]]
+  - [[#installation-1][Installation]]
   - [[#manual-installation][Manual installation]]
-- [[#usage][Usage]]
+  - [[#main-commands][Main Commands]]
+  - [[#usage][Usage]]
+  - [[#customization][Customization]]
 #+END_QUOTE
 
 * Requirements
@@ -28,22 +37,28 @@ This project is currently under development.
 | Emacs |    27.1 |
 
 
+
 * Installation
 
 ** With use-package and straight.el
-#+begin_src elisp :eval no
+** Installation
+
+To install =elfai.el=, add the following to your Emacs configuration:
+
+#+BEGIN_SRC elisp
 (use-package elfai
   :straight (elfai
              :repo "KarimAziev/elfai"
              :type git
              :host github)
-  :commands (elfai-recognize-image
-             elfai-generate-images-batch
-             elfai-create-image
-             elfai-create-image-variation
-             elfai-complete-here
-             elfai-ask-and-insert))
-#+end_src
+  :bind (("s-." . elfai-complete-here)
+         ("s-a" . elfai-menu)
+         ("<f6>" . elfai)
+         (:map elfai-mode-map
+          ("<f6>" . elfai-menu)
+          ("C-c RET" . elfai-send)))
+  :config (setq elfai-api-key "you api key"))
+#+END_SRC
 
 ** Manual installation
 
@@ -60,8 +75,72 @@ Add the downloaded directory to the load path:
 (require 'elfai)
 #+end_src
 
-* Usage
- To use this package, you need to set your OpenAI API key using the =elfai-api-key= custom variable.
 
-The main entry points for interacting with the GPT models are the =elfai-ask-and-insert', =elfai-complete-here', =elfai-create-image=, =elfai-create-image-variation=, =elfai-recognize-image=, and =elfai-set-model= functions. These functions allow you to send prompts to the model, generate images, create variations of images, recognize content in images, and set the model for a given variable.
+** Main Commands
 
+- =elfai=: Start or switch to a chat session.
+- =elfai-menu=: Open a transient menu for various AI-powered text and image processing functions.
+- =elfai-complete-here=: Replace placeholder text in a buffer with GPT-generated content.
+- =elfai-ask-and-insert=: Prompt for input and send it to GPT for processing.
+- =elfai-generate-images-batch=: Generate a batch of images.
+- =elfai-abort-all=: Cancel all pending GPT document requests.
+
+
+** Usage
+
+*** Starting a Session
+
+To start a session, use the command =M-x elfai=. This will open a new buffer where you can interact with the GPT model. If you need to abort an ongoing request, you can do so by pressing =keyboard-quit= (usually =C-g=) multiple times. Refer to the variable =elfai-abort-on-keyboard-quit-count= for more details.
+
+You can attach file links and images to include their content. Images will be seamlessly encoded to base64 format when preparing requests, provided they match the file extensions specified in =elfai-image-allowed-file-extensions=. To prevent certain files from being included, customize the forbidden file extensions in the variable =elfai-non-embeddable-file-extensions=.
+
+Before sending the buffer, the files will be copied to =elfai-attachment-dir=, and the links will be replaced with new ones. This means you can edit the original file, and the old content will be preserved in the discussion. If you prefer to always send the newest content of the file without copying and replacing the links, remove =elfai-copy-and-replace-user-links= from the =elfai-before-parse-buffer-hook=.
+
+Files included with the =#+INCLUDE:= directive are currently not copied, and the original content is always included.
+
+
+*** Transient Menu
+
+To access the transient menu for various AI-powered text and image processing functions, use the command =M-x elfai-menu=.
+
+*** Completing Text
+
+To complete text at the current point, use the command =M-x elfai-complete-here=. This will replace the placeholder text in the buffer with GPT-generated content. Note, it will include in the prompt full content of the file; with a prefix argument, it will include content only before the point.
+
+*** Asking Questions
+
+To ask a question and insert the response without sending any other context, use the command =M-x elfai-ask-and-insert=. You will be prompted to enter your question, and the response will be inserted at the current point.
+
+*** Generating Images
+
+To generate a batch of images, use the command =M-x elfai-generate-images-batch=. You will be prompted to enter a description for the images and the count of images to make, and the generated images will be saved to the specified directory =elfai-images-dir=.
+
+*** Aborting Requests
+
+To abort all pending GPT document requests, use the command =M-x elfai-abort-all=. Inside the =elfai-mode= buffer, you can also do so by pressing =keyboard-quit= (usually =C-g=) multiple times.
+
+[[./elfai-demo-abort.gif]]
+
+
+** Customization
+
+*** Variables
+
+- =elfai-api-key=: An OpenAI API key (string).
+- =elfai-gpt-url=: The URL to the OpenAI GPT API endpoint for chat completions.
+- =elfai-model=: A string variable representing the API model for OpenAI.
+- =elfai-temperature=: The temperature for the OpenAI GPT model used.
+- =elfai-images-dir=: Default directory for GPT template images.
+- =elfai-user-prompt-prefix=: Prefix for user prompts in elfai interactions.
+- =elfai-response-prefix=: Prefix for formatting responses in markdown.
+- =elfai-response-suffix=: Suffix appended to responses.
+- =elfai-image-time-format=: Format given to =format-time-string= which is appended to the image filename.
+- =elfai-image-auto-preview-enabled=: Whether to auto preview image files in completing read.
+- =elfai-system-prompt-alist=: List of predefined system prompts.
+
+*** Hooks
+
+- =elfai-before-parse-buffer-hook=: A hook that runs before parsing the buffer for AI model completion.
+- =elfai-stream-after-insert-hook=: Hooks run after inserting stream response.
+- =elfai-after-full-response-insert-hook=: Hook run after inserting the full response.
+- =elfai-after-full-response-insert-functions=: Hook for functions to run after inserting a full response.
