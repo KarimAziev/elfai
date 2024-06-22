@@ -2794,6 +2794,7 @@ Argument FILES-OR-DIRS is a list of files or directories."
         (push file files)))
     (nreverse files)))
 
+;;;###autoload
 (defun elfai-copy-files-contents-as-org-blocks ()
   "Copy file contents into Org-mode blocks."
   (interactive)
