@@ -2751,15 +2751,6 @@ keywords to be expanded."
                content)))))
 
 
-(defun elfai--copy-file-contents-as-org-blocks (files)
-  "Convert file contents into org blocks based on file extension.
-
-Argument FILES is a list of strings, each representing the path to a file whose
-content will be extracted and formatted as an org block."
-  (mapconcat #'elfai--file-content-as-link
-             files
-             "\n\n"))
-
 (defun elfai--get-dired-marked-files ()
   "Retrieve marked files from the active `dired-mode' buffer."
   (require 'dired)
@@ -2794,17 +2785,77 @@ Argument FILES-OR-DIRS is a list of files or directories."
         (push file files)))
     (nreverse files)))
 
+(defun elfai--get-files-dwim ()
+  "Return a list of marked files in `dired' or the current buffer's file name."
+  (or (elfai--get-files-recoursively
+       (elfai--get-dired-marked-files))
+      (and buffer-file-name (list buffer-file-name))))
+
 ;;;###autoload
-(defun elfai-copy-files-contents-as-org-blocks ()
-  "Copy file contents into Org-mode blocks."
+(defun elfai-copy-files-contents-as-include-directives ()
+  "Copy contents of current file or marked files as list of org links.
+
+In `dired' use marked files, otherwise current buffer file."
   (interactive)
-  (let* ((files (or (elfai--get-files-recoursively
-                     (elfai--get-dired-marked-files))
-                    (and buffer-file-name (list buffer-file-name))))
-         (str (elfai--copy-file-contents-as-org-blocks files)))
+  (let* ((files (elfai--get-files-dwim))
+         (str (mapconcat #'elfai--file-content-as-include-directive
+                         files
+                         "\n\n")))
     (kill-new str)
     (message "Copied content of %s files" (length files))
     str))
+
+;;;###autoload
+(defun elfai-copy-files-contents-as-org-links ()
+  "Copy contents of current file or marked files as list of #+INCLUDE blocks.
+
+In `dired' use marked files, otherwise current buffer file."
+  (interactive)
+  (let* ((files (elfai--get-files-dwim))
+         (str (mapconcat #'elfai--file-content-as-link files "\n\n")))
+    (kill-new str)
+    (message "Copied content of %s files" (length files))
+    str))
+
+;;;###autoload
+(defun elfai-copy-files-as-links-or-include-directive (&optional arg)
+  "Copy files contents as either Org links or #+INCLUDE directives.
+
+In `dired' use marked files, otherwise current buffer file.
+
+If optional prefix argument ARG is non-nil, copy file contents as Org links,
+
+With the prefix argument ARG copy file contents as Org links. If not provided,
+copy as #+INCLUDE directives."
+  (interactive "P")
+  (if arg
+      (elfai-copy-files-contents-as-org-links)
+    (elfai-copy-files-contents-as-include-directives)))
+
+(defun elfai--file-content-as-include-directive (file)
+  "Return a formatted string with FILE content as an include directive.
+
+Argument FILE is the path to the file whose content is to be included."
+  (require 'project)
+  (let* ((parent-dir (file-name-parent-directory file))
+         (proj (ignore-errors
+                 (when (fboundp 'project-root)
+                   (project-root
+                    (project-current nil parent-dir)))))
+         (title (if proj
+                    (substring-no-properties
+                     (expand-file-name file)
+                     (length (expand-file-name proj)))
+                  (abbreviate-file-name file)))
+         (content
+          (concat
+           (format "#+INCLUDE: %s" file)
+           " "
+           "EXAMPLE")))
+    (concat "- " title "\n"
+            "\n"
+            content
+            "\n\n")))
 
 (defun elfai--file-content-as-link (file)
   "Get FILE content as org block with language based on file extension.
