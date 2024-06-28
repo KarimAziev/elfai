@@ -2607,7 +2607,8 @@ Related Custom Variables:
 (defun elfai--get-major-mode (filename)
   "Return the major mode associated with FILENAME, either from buffer or file.
 
-Argument FILENAME is the name of the file for which to determine the major mode."
+Argument FILENAME is the filename of the file for which to determine the major
+mode."
   (or
    (when-let ((buff
                (get-file-buffer filename)))
