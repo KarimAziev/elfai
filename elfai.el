@@ -2849,7 +2849,7 @@ Argument FILE is the path to the file whose content is to be included."
                   (abbreviate-file-name file)))
          (content
           (concat
-           (format "#+INCLUDE: %s" file)
+           (format "#+INCLUDE: %s" (prin1-to-string file))
            " "
            "EXAMPLE")))
     (concat "- " title "\n"
