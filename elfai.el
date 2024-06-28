@@ -2414,17 +2414,29 @@ Argument VALUE is the new value to assign to VAR-SYM.
 
 Optional argument COMMENT is a string to display as a message after setting or
 saving."
-  (if (and (not noninteractive)
-           (yes-or-no-p (format "Save %s with value %s?" var-sym value)))
-      (customize-save-variable var-sym value
-                               "Saved by elfai-set-or-save-variable")
-    (funcall (or
-              (get var-sym 'custom-set)
-              #'set-default)
-             var-sym
-             value)
-    (message (or comment (format "Variable's %s value is setted to %s"
-                                 var-sym value))))
+  (cond ((and (not noninteractive)
+              (yes-or-no-p (format "Save %s with value %s?" var-sym value)))
+         (customize-save-variable var-sym value
+                                  "Saved by elfai-set-or-save-variable"))
+        ((local-variable-p var-sym)
+         (set var-sym value)
+         (message
+          (or comment
+              (format
+               "Variable's %s value is setted to %s locally in buffer %s"
+               var-sym value
+               (current-buffer)))))
+        ((get var-sym 'custom-set)
+         (funcall (get var-sym 'custom-set)
+                  var-sym
+                  value)
+         (message (or comment (format "Variable's %s value is setted to %s"
+                                      var-sym value))))
+        (t (set-default
+            var-sym
+            value)
+           (message (or comment (format "Variable's %s value is setted to %s"
+                                        var-sym value)))))
   value)
 
 ;;;###autoload
