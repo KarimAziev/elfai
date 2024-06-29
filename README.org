@@ -96,12 +96,29 @@ You can attach file links and images to include their content. Images will be se
 
 Before sending the buffer, the files will be copied to =elfai-attachment-dir=, and the links will be replaced with new ones. This means you can edit the original file, and the old content will be preserved in the discussion. If you prefer to always send the newest content of the file without copying and replacing the links, remove =elfai-copy-and-replace-user-links= from the =elfai-before-parse-buffer-hook=.
 
-Files included with the =#+INCLUDE:= directive are currently not copied, and the original content is always included.
+By default, files included with the =#+INCLUDE:= directive are not copied, and the original content is always included. However, you can customize this behavior by modifying the =elfai-allowed-include-directives= variable.
 
+*** Using #+INCLUDE: and #+INCLUDE_COPY: Directives
+
+You can use the =#+INCLUDE:= directive to include the content of a file directly in the prompt. This directive will include the original content of the file without copying it. For example:
+
+#+BEGIN_SRC org
+#+INCLUDE: "path/to/your/file.txt"
+#+END_SRC
+
+If you want to copy the file to the =elfai-attachment-dir= and include the copied content, use the =#+INCLUDE_COPY:= directive. This directive will copy the file to the specified directory and include the copied content. For example:
+
+#+BEGIN_SRC org
+#+INCLUDE_COPY: "path/to/your/file.txt"
+#+END_SRC
+
+These directives can be customized by modifying the =elfai-allowed-include-directives= variable, allowing you to manage how file content is included in the prompt and giving you flexibility in handling file references.
 
 *** Transient Menu
 
 To access the transient menu for various AI-powered text and image processing functions, use the command =M-x elfai-menu=.
+
+[[./elfai-menu-demo.png]]
 
 *** Completing Text
 
@@ -137,6 +154,7 @@ To abort all pending GPT document requests, use the command =M-x elfai-abort-all
 - =elfai-image-time-format=: Format given to =format-time-string= which is appended to the image filename.
 - =elfai-image-auto-preview-enabled=: Whether to auto preview image files in completing read.
 - =elfai-system-prompt-alist=: List of predefined system prompts.
+- =elfai-allowed-include-directives=: Alist of allowed include directives for buffer processing.
 
 *** Hooks
 

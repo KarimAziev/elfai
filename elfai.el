@@ -126,13 +126,15 @@ be added to this list."
            :inline t
            :tag "Custom functions" function)))
 
-(defcustom elfai-before-parse-buffer-hook '(elfai-copy-and-replace-user-links)
-  "A hook that runs before parsing the buffer for AI model completion.
+(defcustom elfai-before-parse-buffer-hook '(elfai-copy-and-replace-user-links
+                                            elfai-copy-and-replace-include-directives)
+  "A hook that runs before parsing the chat buffer.
 
-The default function in the hook is `elfai-copy-and-replace-user-links'.
+This hook allows customization of actions to be performed on the
+buffer content before it is parsed and sent to the AI model.
 
-Functions added to this hook should take no arguments and will be
-executed in the current buffer context."
+Each function in the hook should accept no arguments and will be
+called in the order they are listed."
   :group 'elfai
   :type 'hook)
 
@@ -280,6 +282,28 @@ key (more secure)."
           (string :tag "API key")
           (function-item elfai-api-key-from-auth-source)
           (function :tag "Function that returns the API key")))
+
+(defcustom elfai-allowed-include-directives '((copy
+                                               "#+include_copy:")
+                                              (identity "#+include:"))
+  "Alist of allowed include directives for buffer processing.
+
+An alist defining allowed include directives and their handling
+methods.
+
+Each key is a method, either `copy' or `identity'. The value is a
+list of strings representing the include directives associated
+with that method.
+
+- `copy': Directives that should be copied verbatim.
+
+- `identity': Directives that should be processed as-is."
+  :group 'elfai
+  :type '(alist
+          :key-type (radio :tag "Method"
+                     (const copy)
+                     (const identity))
+          :value-type (repeat :tag "Directive" string)))
 
 (defcustom elfai-gpt-url "https://api.openai.com/v1/chat/completions"
   "The URL to the OpenAI GPT API endpoint for chat completions."
@@ -2656,7 +2680,7 @@ Argument SYM is the symbol representing the major mode."
 
 (defun elfai--parse-buffer-data ()
   "Parse buffer content, extracting and categorizing text and links into data."
-  (require 'ol)
+  (require 'org)
   (let ((data)
         (link-re (org-link-make-regexps))
         (content-beg (point-min))
@@ -2668,9 +2692,9 @@ Argument SYM is the symbol representing the major mode."
              (lambda (str)
                (unless (string-empty-p str)
                  (let ((prev-elem (car-safe data))
-                       (text (if (string-match-p "^[ \t]*#\\+INCLUDE:" str)
-                                 (elfai--include-files str)
-                               str)))
+                       (text (or
+                              (elfai--include-files str)
+                              str)))
                    (cond ((and prev-elem
                                (plist-get prev-elem :type)
                                (equal (plist-get prev-elem :type)
@@ -2745,7 +2769,7 @@ Argument SYM is the symbol representing the major mode."
 
 (declare-function org-export-expand-include-keyword "ox")
 
-(defun elfai--include-files (content)
+(defun elfai--include-files-with-org-export (content)
   "Expand included files in Org CONTENT and return result.
 
 Argument CONTENT is a string containing the text with `org-mode' include
@@ -2762,6 +2786,229 @@ keywords to be expanded."
                   (point-max)))
         (error (message "Elfai: Couldn't expand #+INCLUDE directive: %s" err)
                content)))))
+
+(defun elfai--include-files (content)
+  "Insert the contents of included files into the buffer at matching directives.
+
+Argument CONTENT is the string containing the text to process."
+  (when-let ((regex (elfai--make-include-directives-regex)))
+    (with-temp-buffer
+      (insert content)
+      (let ((case-fold-search t))
+        (while (re-search-backward
+                regex
+                (point-min) t
+                1)
+          (let* ((value (match-string-no-properties 2))
+                 (beg (match-beginning 0))
+                 (end (match-end 0))
+                 (params (elfai--parse-include-value value))
+                 (link-path (plist-get params :file)))
+            (when (and link-path (file-readable-p link-path))
+              (let ((block (plist-get params :block)))
+                (delete-region beg end)
+                (when block
+                  (insert (upcase (concat "#+begin_" block "\n")))
+                  (save-excursion
+                    (insert (upcase (concat "#+end_" block "\n")))))
+                (insert-file-contents link-path))))))
+      (buffer-string))))
+
+
+(defun elfai--unbracket-string (pre post string)
+  "Remove PRE/POST from the beginning/end of STRING.
+Both PRE and POST must be pre-/suffixes of STRING, or neither is
+removed.  Return the new string.  If STRING is nil, return nil."
+  (declare (indent 2))
+  (and string
+       (if (and (string-prefix-p pre string)
+                (string-suffix-p post string))
+           (substring string (length pre)
+                      (and (not (string-equal "" post)) (- (length post))))
+         string)))
+
+(defun elfai--strip-quotes (string)
+  "Strip double quotes from around STRING, if applicable.
+If STRING is nil, return nil."
+  (elfai--unbracket-string "\"" "\"" string))
+
+(defvar ffap-url-regexp)
+
+(defun elfai--url-p (s)
+  "Non-nil if string S is a URL."
+  (require 'ffap)
+  (and ffap-url-regexp (string-match-p ffap-url-regexp s)))
+
+(defun elfai--parse-include-value (value)
+  "Extract the various parameters from #+include: VALUE.
+
+More specifically, this extracts the following parameters to a
+plist: :file, :coding-system, :location, :only-contents, :lines,
+:env, :minlevel, :args, and :block.
+
+The :file parameter is expanded relative to DIR.
+
+The :file, :block, and :args parameters are extracted
+positionally, while the remaining parameters are extracted as
+plist-style keywords."
+  (let* (location
+         (coding-system
+          (and (string-match ":coding +\\(\\S-+\\)>" value)
+               (prog1 (intern (match-string 1 value))
+                 (setq value (replace-match "" nil nil value)))))
+         (file
+          (and (string-match "^\\(\".+?\"\\|\\S-+\\)\\(?:\\s-+\\|$\\)" value)
+               (let ((matched (match-string 1 value)))
+                 (setq value (replace-match "" nil nil value))
+                 (when (string-match "\\(::\\(.*?\\)\\)\"?\\'"
+                                     matched)
+                   (setq location (match-string 2 matched))
+                   (setq matched
+                         (replace-match "" nil nil matched 1)))
+                 (elfai--strip-quotes matched))))
+         (only-contents
+          (and (string-match ":only-contents *\\([^: \r\t\n]\\S-*\\)?"
+                             value)
+               (prog1
+                   (let ((v (match-string 1 value)))
+                     (and v (not (equal v "nil")) v))
+                 (setq value (replace-match "" nil nil value)))))
+         (lines
+          (and (string-match
+                ":lines +\"\\([0-9]*-[0-9]*\\)\""
+                value)
+               (prog1 (match-string 1 value)
+                 (setq value (replace-match "" nil nil value)))))
+         (env
+          (cond ((string-match "\\<example\\>" value) 'literal)
+                ((string-match "\\<export\\(?: +\\(.*\\)\\)?" value)
+                 'literal)
+                ((string-match "\\<src\\(?: +\\(.*\\)\\)?" value)
+                 'literal)))
+         (args (and (eq env 'literal)
+                    (prog1 (match-string 1 value)
+                      (when (match-string 1 value)
+                        (setq value (replace-match "" nil nil value 1))))))
+         (block (and (or (string-match "\"\\(\\S-+\\)\"" value)
+                         (string-match "\\<\\(\\S-+\\)\\>" value))
+                     (or (= (match-beginning 0) 0)
+                         (not (= ?: (aref value (1- (match-beginning 0))))))
+                     (prog1 (match-string 1 value)
+                       (setq value (replace-match "" nil nil value))))))
+    (list
+     :file file
+     :coding-system coding-system
+     :location location
+     :only-contents only-contents
+     :lines lines
+     :env env
+     :args args
+     :block block)))
+
+(defun elfai--normalize-directive (directive)
+  "Return normalized DIRECTIVE with \"#+\" prefix and \":\" suffix.
+
+Argument DIRECTIVE is the string to be normalized."
+  (let ((trimmed (string-trim directive)))
+    (unless (string-prefix-p "#+" trimmed)
+      (setq trimmed (concat "#+" trimmed)))
+    (unless (string-suffix-p ":" trimmed)
+      (setq trimmed (concat trimmed ":")))
+    trimmed))
+(defun elfai--make-copy-directives-regex ()
+  "Generate a regex for matching copy directives.
+
+See variable `elfai-allowed-include-directives'"
+  (when-let ((directives (mapcar
+                          (lambda (it)
+                            (let ((trimmed (string-trim it)))
+                              (unless (string-prefix-p "#+" trimmed)
+                                (setq trimmed (concat "#+" trimmed)))
+                              (unless (string-suffix-p ":" trimmed)
+                                (setq trimmed (concat trimmed ":")))
+                              (regexp-quote trimmed)))
+                          (cdr (assq 'copy elfai-allowed-include-directives)))))
+    (concat
+     "^[ \t]*"
+     "\\("
+     (string-join directives "\\|")
+     "\\)"
+     "[ \t]*\\([^\n]+\\)")))
+
+(defun elfai--make-include-directives-regex ()
+  "Return a regex matching allowed include directives.
+See variable `elfai-allowed-include-directives'."
+  (when-let ((directives (mapcar
+                          (lambda (it)
+                            (let ((trimmed (string-trim it)))
+                              (unless (string-prefix-p "#+" trimmed)
+                                (setq trimmed (concat "#+" trimmed)))
+                              (unless (string-suffix-p ":" trimmed)
+                                (setq trimmed (concat trimmed ":")))
+                              (regexp-quote trimmed)))
+                          (delete-dups
+                           (seq-reduce (lambda (acc it)
+                                         (setq acc (append acc (cdr it))))
+                                       elfai-allowed-include-directives
+                                       '())))))
+    (concat
+     "^[ \t]*"
+     "\\("
+     (string-join directives "\\|")
+     "\\)"
+     "[ \t]*\\([^\n]+\\)")))
+
+(defun elfai-copy-and-replace-include-directives ()
+  "Copy files referenced by include directives to a specified directory."
+  (when-let ((regex (elfai--make-copy-directives-regex)))
+    (let (prop)
+      (save-excursion
+        (while (and
+                (setq prop (text-property-search-backward
+                            'elfai 'response
+                            (when (get-char-property
+                                   (max (point-min) (1- (point)))
+                                   'elfai)
+                              t))))
+          (unless (prop-match-value prop)
+            (let ((user-start (prop-match-beginning prop))
+                  (user-end (prop-match-end prop))
+                  (case-fold-search t))
+              (save-excursion
+                (goto-char user-end)
+                (while (re-search-backward
+                        regex
+                        user-start t
+                        1)
+                  (let* ((value (match-string-no-properties 2))
+                         (end (match-end 2))
+                         (link-path (and (string-match
+                                          "^\\(\".+?\"\\|\\S-+\\)\\(?:\\s-+\\|$\\)"
+                                          value)
+                                         (let ((matched (match-string 1 value)))
+                                           (setq value (replace-match "" nil nil value))
+                                           (when (string-match
+                                                  "\\(::\\(.*?\\)\\)\"?\\'"
+                                                  matched)
+                                             (setq matched
+                                                   (replace-match "" nil nil matched 1)))
+                                           (elfai--strip-quotes matched)))))
+                    (when (and link-path
+                               (and (not (string-empty-p link-path))
+                                    (file-readable-p link-path)
+                                    (file-exists-p link-path)
+                                    (not
+                                     (file-in-directory-p
+                                      link-path
+                                      elfai-attachment-dir))
+                                    (not (file-directory-p link-path))))
+                      (let ((re (regexp-quote link-path))
+                            (full-path (elfai--copy-file-to-attachment-dir
+                                        (expand-file-name
+                                         link-path))))
+                        (save-excursion
+                          (when (re-search-forward re end t 1)
+                            (replace-match full-path)))))))))))))))
 
 
 (defun elfai--get-dired-marked-files ()
@@ -2804,28 +3051,43 @@ Argument FILES-OR-DIRS is a list of files or directories."
        (elfai--get-dired-marked-files))
       (and buffer-file-name (list buffer-file-name))))
 
-;;;###autoload
-(defun elfai-copy-files-contents-as-include-directives ()
-  "Copy contents of current file or marked files as list of org links.
 
-In `dired' use marked files, otherwise current buffer file."
-  (interactive)
+;;;###autoload
+(defun elfai-copy-files-paths-as-include-directives (directive)
+  "Copy file paths as include directives with a specified directive.
+
+Argument DIRECTIVE is the string representing the include directive to use.
+
+See also `elfai-allowed-include-directives'."
+  (interactive
+   (list (completing-read "Directive: "
+                          (mapcar (lambda (it)
+                                    (replace-regexp-in-string "^#\\+"
+                                                              ""
+                                                              (elfai--normalize-directive
+                                                               it)))
+                                  (delete-dups
+                                   (seq-reduce (lambda (acc it)
+                                                 (setq acc (append acc (cdr it))))
+                                               elfai-allowed-include-directives
+                                               '()))))))
   (let* ((files (elfai--get-files-dwim))
-         (str (mapconcat #'elfai--file-content-as-include-directive
-                         files
-                         "\n\n")))
+         (str (mapconcat
+               (apply-partially
+                #'elfai--file-path-as-include-directive
+                (elfai--normalize-directive directive))
+               files
+               "\n\n")))
     (kill-new str)
     (message "Copied content of %s files" (length files))
     str))
 
 ;;;###autoload
-(defun elfai-copy-files-contents-as-org-links ()
-  "Copy contents of current file or marked files as list of #+INCLUDE blocks.
-
-In `dired' use marked files, otherwise current buffer file."
+(defun elfai-copy-files-paths-as-org-links ()
+  "Copy the paths of marked files as Org-mode links to the clipboard."
   (interactive)
   (let* ((files (elfai--get-files-dwim))
-         (str (mapconcat #'elfai--file-content-as-link files "\n\n")))
+         (str (mapconcat #'elfai--format-file-path-as-link files "\n\n")))
     (kill-new str)
     (message "Copied content of %s files" (length files))
     str))
@@ -2842,11 +3104,26 @@ With the prefix argument ARG copy file contents as Org links. If not provided,
 copy as #+INCLUDE directives."
   (interactive "P")
   (if arg
-      (elfai-copy-files-contents-as-org-links)
-    (elfai-copy-files-contents-as-include-directives)))
+      (elfai-copy-files-paths-as-include-directives
+       (completing-read "Directive: "
+                        (mapcar (lambda (it)
+                                  (replace-regexp-in-string "^#\\+"
+                                                            ""
+                                                            (elfai--normalize-directive
+                                                             it)))
+                                (delete-dups
+                                 (seq-reduce
+                                  (lambda (acc it)
+                                    (setq acc (append acc (cdr it))))
+                                  (reverse elfai-allowed-include-directives)
+                                  '())))))
+    (elfai-copy-files-paths-as-include-directives
+     (cadar elfai-allowed-include-directives))))
 
-(defun elfai--file-content-as-include-directive (file)
-  "Return a formatted string with FILE content as an include directive.
+(defun elfai--file-path-as-include-directive (directive file)
+  "Return a string with an include directive and the path to FILE.
+
+Argument DIRECTIVE is a string representing the directive to be included.
 
 Argument FILE is the path to the file whose content is to be included."
   (require 'project)
@@ -2862,7 +3139,7 @@ Argument FILE is the path to the file whose content is to be included."
                   (abbreviate-file-name file)))
          (content
           (concat
-           (format "#+INCLUDE: %s" (prin1-to-string file))
+           (format "%s %s" directive (prin1-to-string file))
            " "
            "EXAMPLE")))
     (concat "- " title "\n"
@@ -2870,11 +3147,10 @@ Argument FILE is the path to the file whose content is to be included."
             content
             "\n\n")))
 
-(defun elfai--file-content-as-link (file)
-  "Get FILE content as org block with language based on file extension.
+(defun elfai--format-file-path-as-link (file)
+  "Format FILE as an Org-mode link with its project-relative or abbreviated path.
 
-Argument FILE is a string representing the path to the file whose content will
-be extracted and formatted as an org block."
+Argument FILE is the path of the file to be formatted as a link."
   (require 'project)
   (let* ((parent-dir (file-name-parent-directory file))
          (proj (ignore-errors
@@ -2892,7 +3168,6 @@ be extracted and formatted as an org block."
   "Expand CONTENT into a vector of parsed data elements.
 
 Argument CONTENT is the string containing the content to be expanded."
-  (require 'org)
   (let ((data (with-temp-buffer
                 (insert content)
                 (elfai--parse-buffer-data))))
@@ -2900,6 +3175,7 @@ Argument CONTENT is the string containing the content to be expanded."
 
 (defun elfai-copy-and-replace-user-links ()
   "Replace user links with new paths after copying files to the elfai directory."
+  (require 'org)
   (let ((prop)
         (link-re (org-link-make-regexps)))
     (save-excursion
@@ -2928,6 +3204,10 @@ Argument CONTENT is the string containing the content to be expanded."
                                              org-link-types-re
                                              "" link)))
                              (when (and (not (string-empty-p link-path))
+                                        (not
+                                         (member (file-name-extension
+                                                  link-path)
+                                                 elfai-image-allowed-file-extensions))
                                         (file-exists-p link-path)
                                         (not
                                          (file-in-directory-p
@@ -3078,7 +3358,10 @@ TEXT will be inserted and `elfai-mode' activated, as well as `org-mode'."
           (when text (elfai-get-org-language
                       major-mode)))
          (wind-pos)
-         (buffer (with-current-buffer (get-buffer-create buff-name)
+         (buffer (with-current-buffer
+                     (get-buffer-create
+                      (or buff-name
+                          "*Elfai response*"))
                    (unless (symbol-value 'elfai-mode)
                      (elfai-mode))
                    (setq-local elfai-model elfai-model)
