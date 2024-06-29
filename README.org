@@ -143,7 +143,7 @@ To generate a batch of images, use the command =M-x elfai-generate-images-batch=
 
 To abort all pending GPT document requests, use the command =M-x elfai-abort-all=. Inside the =elfai-mode= buffer, you can also do so by pressing =keyboard-quit= (usually =C-g=) multiple times.
 
-[[./elfai-demo-abort.gif]]
+[[./elfai-abort-demo.gif]]
 
 
 * Customization
