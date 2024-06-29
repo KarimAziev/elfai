@@ -25,9 +25,16 @@
   - [[#with-use-package-and-straightel][With use-package and straight.el]]
   - [[#installation-1][Installation]]
   - [[#manual-installation][Manual installation]]
-  - [[#main-commands][Main Commands]]
-  - [[#usage][Usage]]
-  - [[#customization][Customization]]
+- [[#main-commands][Main Commands]]
+- [[#usage][Usage]]
+  - [[#starting-a-session][Starting a Session]]
+  - [[#using-include-and-include_copy-directives][Using #+INCLUDE: and #+INCLUDE_COPY: Directives]]
+  - [[#transient-menu][Transient Menu]]
+  - [[#completing-text][Completing Text]]
+  - [[#asking-questions][Asking Questions]]
+  - [[#generating-images][Generating Images]]
+  - [[#aborting-requests][Aborting Requests]]
+- [[#customization][Customization]]
 #+END_QUOTE
 
 * Requirements
@@ -76,7 +83,7 @@ Add the downloaded directory to the load path:
 #+end_src
 
 
-** Main Commands
+* Main Commands
 
 - =elfai=: Start or switch to a chat session.
 - =elfai-menu=: Open a transient menu for various AI-powered text and image processing functions.
@@ -86,9 +93,9 @@ Add the downloaded directory to the load path:
 - =elfai-abort-all=: Cancel all pending GPT document requests.
 
 
-** Usage
+* Usage
 
-*** Starting a Session
+** Starting a Session
 
 To start a session, use the command =M-x elfai=. This will open a new buffer where you can interact with the GPT model. If you need to abort an ongoing request, you can do so by pressing =keyboard-quit= (usually =C-g=) multiple times. Refer to the variable =elfai-abort-on-keyboard-quit-count= for more details.
 
@@ -98,7 +105,7 @@ Before sending the buffer, the files will be copied to =elfai-attachment-dir=, a
 
 By default, files included with the =#+INCLUDE:= directive are not copied, and the original content is always included. However, you can customize this behavior by modifying the =elfai-allowed-include-directives= variable.
 
-*** Using #+INCLUDE: and #+INCLUDE_COPY: Directives
+** Using #+INCLUDE: and #+INCLUDE_COPY: Directives
 
 You can use the =#+INCLUDE:= directive to include the content of a file directly in the prompt. This directive will include the original content of the file without copying it. For example:
 
@@ -114,32 +121,32 @@ If you want to copy the file to the =elfai-attachment-dir= and include the copie
 
 These directives can be customized by modifying the =elfai-allowed-include-directives= variable, allowing you to manage how file content is included in the prompt and giving you flexibility in handling file references.
 
-*** Transient Menu
+** Transient Menu
 
 To access the transient menu for various AI-powered text and image processing functions, use the command =M-x elfai-menu=.
 
 [[./elfai-menu-demo.png]]
 
-*** Completing Text
+** Completing Text
 
 To complete text at the current point, use the command =M-x elfai-complete-here=. This will replace the placeholder text in the buffer with GPT-generated content. Note, it will include in the prompt full content of the file; with a prefix argument, it will include content only before the point.
 
-*** Asking Questions
+** Asking Questions
 
 To ask a question and insert the response without sending any other context, use the command =M-x elfai-ask-and-insert=. You will be prompted to enter your question, and the response will be inserted at the current point.
 
-*** Generating Images
+** Generating Images
 
 To generate a batch of images, use the command =M-x elfai-generate-images-batch=. You will be prompted to enter a description for the images and the count of images to make, and the generated images will be saved to the specified directory =elfai-images-dir=.
 
-*** Aborting Requests
+** Aborting Requests
 
 To abort all pending GPT document requests, use the command =M-x elfai-abort-all=. Inside the =elfai-mode= buffer, you can also do so by pressing =keyboard-quit= (usually =C-g=) multiple times.
 
 [[./elfai-demo-abort.gif]]
 
 
-** Customization
+* Customization
 
 *** Variables
 
