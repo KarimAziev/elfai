@@ -133,7 +133,7 @@ To complete text at the current point, use the command =M-x elfai-complete-here=
 
 ** Asking Questions
 
-To ask a question and insert the response without sending any other context, use the command =M-x elfai-ask-and-insert=. You will be prompted to enter your question, and the response will be inserted at the current point.
+In non-elfai session buffers, use the command =M-x elfai-ask-and-insert= to ask a question and insert the response without sending any other context. You will be prompted to enter your question, and the response will be inserted at the current point.
 
 ** Generating Images
 
