@@ -3835,13 +3835,28 @@ Argument DEST-DIR is the directory where the FILE will be saved."
    "New system prompt: "
    (or initial-str "")
    (lambda (edited)
-     (let* ((label (read-string "Short description: "))
-            (item (cons label edited)))
-       (add-to-list 'elfai-system-prompt-alist item)
-       (let ((idx
-              (seq-position elfai-system-prompt-alist item)))
-         (setq elfai-curr-prompt-idx idx)
-         (message "New system prompt added and setted"))))
+     (if (rassoc edited elfai-system-prompt-alist)
+         (message "Such prompt already exists - `%s'"
+                  (car
+                   (rassoc edited
+                           elfai-system-prompt-alist)))
+       (let* ((label (read-string "Short description: "))
+              (label-cell (assoc-string label elfai-system-prompt-alist))
+              (item (cons label edited)))
+         (cond ((rassoc edited elfai-system-prompt-alist))
+               ((and label-cell (yes-or-no-p
+                                 "This label already exists, override?"))
+                (setcdr label-cell edited)
+                (setq elfai-curr-prompt-idx (seq-position
+                                             elfai-system-prompt-alist
+                                             label-cell))
+                (message "The system prompt for `%s' is changed" label))
+               ((not label-cell)
+                (setq elfai-system-prompt-alist
+                      (push item elfai-system-prompt-alist))
+                (setq elfai-curr-prompt-idx
+                      (seq-position elfai-system-prompt-alist item))
+                (message "New system prompt added and setted"))))))
    :abort-callback (lambda ())))
 
 (transient-define-suffix elfai-edit-system-prompt ()
@@ -3852,7 +3867,7 @@ Argument DEST-DIR is the directory where the FILE will be saved."
   (interactive)
   (let ((cell (nth elfai-curr-prompt-idx elfai-system-prompt-alist)))
     (string-edit
-     "Edit system prompt: "
+     (format "Edit the system prompt `%s'" (car cell))
      (cdr cell)
      (lambda (edited)
        (setcdr cell edited)
