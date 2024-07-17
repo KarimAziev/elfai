@@ -317,7 +317,7 @@ with that method.
   :type 'string)
 
 
-(defcustom elfai-temperature 0.1
+(defcustom elfai-temperature 1.0
   "The temperature for the OpenAI GPT model used.
 
 This is a number between 0.0 and 2.0 that controls the randomness
