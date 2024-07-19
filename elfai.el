@@ -68,6 +68,7 @@
 
 (declare-function text-property-search-backward "text-property-search")
 (declare-function prop-match-value "text-property-search")
+(declare-function json-pretty-print-buffer "json")
 
 (defvar json-object-type)
 (defvar json-array-type)
@@ -265,10 +266,13 @@ If a list, it is a list of the types of messages to be logged."
            :tag "all"
            :value t)
           (checklist :tag "custom"
-           (integer :tag "Allow echo message buffer" :value 1)
-           (const :tag "Parse" parse)
+           (integer
+            :tag "Allow echo message buffer"
+            :value 1)
+           (const :tag "Parse" parse-buffer)
+           (const :tag "Process" process)
            (const :tag "Response" response)
-           (symbol :tag "Other" ))))
+           (symbol :tag "Other"))))
 
 (defvar-local elfai-loading nil)
 
@@ -464,6 +468,45 @@ content updates."
   :group 'elfai
   :local t
   :type 'hook)
+
+(defcustom elfai-after-full-response-insert-hook nil
+  "Hook run after inserting the full response.
+
+A hook that runs after a full response has been inserted.
+
+This hook is useful for performing additional actions or
+processing after the insertion of a complete response. Each
+function in the hook is called with two arguments: the beginning
+and end positions of the inserted text."
+  :group 'elfai
+  :type 'hook)
+
+(defcustom elfai-after-full-response-insert-functions nil
+  "Abnormal hook to run after inserting a full response.
+
+Each function in the list is called with two arguments: the
+beginning and end positions of the inserted text.
+
+This allows for additional processing or actions to be performed on the
+inserted text, such as syntax highlighting, formatting, or
+further analysis."
+  :group 'elfai
+  :type 'hook)
+
+
+(defmacro elfai--json-encode (object)
+  "Return JSON-encoded representation of OBJECT.
+
+Argument OBJECT is the Lisp object to be encoded into JSON format."
+  (if (fboundp 'json-serialize)
+      `(json-serialize ,object
+        :null-object nil
+        :false-object :json-false)
+    (require 'json)
+    (defvar json-false)
+    (declare-function json-encode "json" (object))
+    `(let ((json-false :json-false))
+      (json-encode ,object))))
 
 (defvar-local elfai--bounds nil)
 (put 'elfai--bounds 'safe-local-variable #'always)
@@ -771,15 +814,19 @@ Argument BUFFER is the buffer associated with a request to be aborted."
           (setq end pos)
         (setq end (next-single-property-change pos prop))
         (when (null end)
-          (setq end (point-min))))
+          (setq end (point-max))))
       (cons beg end))))
 
-(defun elfai--remove-text-props ()
-  "Strip `elfai' text properties from a document region."
+(defun elfai--remove-text-props (boundary-prop &optional props)
+  "Remove specified text properties within the boundaries of a given property.
+
+Argument BOUNDARY-PROP is the text property used to determine the boundaries.
+
+Optional argument PROPS is a list of text properties to be removed."
   (pcase-let ((`(,beg . ,end)
-               (elfai--property-boundaries 'elfai)))
+               (elfai--property-boundaries boundary-prop)))
     (when (and beg end)
-      (remove-text-properties beg end '(elfai t elfai-old t)))))
+      (remove-text-properties beg end props))))
 
 (defun elfai-abort-current-buffer ()
   "Cancel processing in the active buffer."
@@ -792,10 +839,17 @@ Argument BUFFER is the buffer associated with a request to be aborted."
 Argument URL-BUFF is the buffer associated with the URL retrieval process to be
 aborted."
   (pcase-dolist (`(,req-buff . ,marker) elfai--request-url-buffers)
+    (elfai--debug 'process
+                  "request buffer check `%s'" req-buff)
     (when (or (eq url-buff t)
               (eq req-buff url-buff))
       (when (buffer-live-p req-buff)
         (let ((proc (get-buffer-process req-buff)))
+          (elfai--debug 'process
+                        "process `%S' status `%s'\nlive: `%s'\n process-plist `%S'"
+                        proc (process-status proc)
+                        (process-live-p proc)
+                        (process-plist proc))
           (when proc
             (delete-process proc))
           (kill-buffer req-buff))))
@@ -867,7 +921,9 @@ Argument INFO is a property list containing the insertion position and tracking
 information."
   (let ((start-marker (plist-get info :position))
         (tracking-marker (plist-get info :tracking-marker))
-        (inserter (plist-get info :inserter)))
+        (inserter (plist-get info :inserter))
+        (text-props (or (plist-get info :text-props-indicator)
+                        elfai-props-indicator)))
     (when response
       (with-current-buffer (marker-buffer start-marker)
         (save-excursion
@@ -877,9 +933,7 @@ information."
             (set-marker-insertion-type tracking-marker t)
             (plist-put info :tracking-marker tracking-marker))
           (goto-char tracking-marker)
-          (add-text-properties
-           0 (length response) elfai-props-indicator
-           response)
+          (add-text-properties 0 (length response) text-props response)
           (funcall (or inserter #'insert) response)
           (run-hooks 'elfai-stream-after-insert-hook))))))
 
@@ -930,31 +984,6 @@ Argument PLIST is the property list from which KEYS are omitted."
             (setq result (plist-put result key (nth (1+ idx) plist)))))))
     result))
 
-(defcustom elfai-after-full-response-insert-hook nil
-  "Hook run after inserting the full response.
-
-A hook that runs after a full response has been inserted.
-
-This hook is useful for performing additional actions or
-processing after the insertion of a complete response. Each
-function in the hook is called with two arguments: the beginning
-and end positions of the inserted text."
-  :group 'elfai
-  :type 'hook)
-
-(defcustom elfai-after-full-response-insert-functions nil
-  "Hook for functions to run after inserting a full response.
-
-A list of functions to be called after a full response has been
-inserted into the buffer.
-
-Each function in the list is called with two arguments: the
-beginning and end positions of the inserted text. This allows
-for additional processing or actions to be performed on the
-inserted text, such as syntax highlighting, formatting, or
-further analysis."
-  :group 'elfai
-  :type 'hook)
 
 
 
@@ -1028,7 +1057,8 @@ Argument INFO is a property list containing various request-related data."
                                     (when start-marker
                                       (goto-char start-marker))
                                     (unless (symbol-value 'elfai-mode)
-                                      (elfai--remove-text-props)))
+                                      (elfai--remove-text-props 'elfai
+                                                                elfai-props-indicator)))
                                   (setq elfai--request-url-buffers
                                         (assq-delete-all
                                          (plist-get info :request-buffer)
@@ -1109,7 +1139,7 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                       ("Content-Type" . "application/json")))
          (url-request-method "POST")
          (url-request-data (encode-coding-string
-                            (json-encode
+                            (elfai--json-encode
                              request-data)
                             'utf-8))
          (request-buffer)
@@ -1131,11 +1161,15 @@ Remaining arguments PROPS are additional properties passed as a plist."
                               (funcall error-cb err))))
                         (let ((start-marker
                                (plist-get info
-                                          :position)))
+                                          :position))
+                              (elfai-props-indicator (or
+                                                      (plist-get info
+                                                                 :text-props-indicator)
+                                                      elfai-props-indicator)))
                           (elfai--abort-by-marker start-marker)))))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
-                    (unless typing
+                    (unless (or (plist-get info :inhibit-status) typing)
                       (setq typing t)
                       (elfai--update-status " Typing..." 'warning t))
                     (elfai--stream-insert-response
@@ -1144,26 +1178,29 @@ Remaining arguments PROPS are additional properties passed as a plist."
                      info))))))))
     (plist-put info :callback callback)
     (setq request-buffer
-          (url-retrieve
-           elfai-gpt-url
-           (lambda (status &rest _events)
-             (let* ((buff (current-buffer))
-                    (err
-                     (elfai--retrieve-error status)))
-               (if (not err)
-                   (when (symbol-value 'elfai-abort-mode)
-                     (elfai-abort-mode -1))
-                 (run-with-timer 0.5 nil #'elfai--abort-by-url-buffer buff)
-                 (message err)
-                 (when (buffer-live-p buffer)
-                   (when (and error-cb (buffer-live-p buffer))
-                     (with-current-buffer buffer
-                       (when error-cb
-                         (funcall error-cb err))))
-                   (let ((start-marker
-                          (plist-get info
-                                     :position)))
-                     (elfai--abort-by-marker start-marker))))))))
+          (condition-case err
+              (url-retrieve elfai-gpt-url
+                            (lambda (status &rest _events)
+                              (let* ((buff (current-buffer))
+                                     (err
+                                      (elfai--retrieve-error status)))
+                                (if (not err)
+                                    (when (symbol-value 'elfai-abort-mode)
+                                      (elfai-abort-mode -1))
+                                  (run-with-timer 0.5 nil #'elfai--abort-by-url-buffer buff)
+                                  (message err)
+                                  (when (buffer-live-p buffer)
+                                    (when (and error-cb (buffer-live-p buffer))
+                                      (with-current-buffer buffer
+                                        (when error-cb
+                                          (funcall error-cb err))))
+                                    (let ((start-marker
+                                           (plist-get info :position))
+                                          (elfai-props-indicator (or (plist-get info :text-props-indicator)
+                                                                     elfai-props-indicator)))
+                                      (message "elfai-props-indicator 2=`%S'" elfai-props-indicator)
+                                      (elfai--abort-by-marker start-marker)))))))
+            (error (message "elfai: url-retrieve error `%s'" err))))
     (plist-put info :request-buffer request-buffer)
     (push (cons request-buffer start-marker)
           elfai--request-url-buffers)
@@ -1175,6 +1212,8 @@ Remaining arguments PROPS are additional properties passed as a plist."
                 (lambda (&rest _)
                   (elfai--parse-request-chunks info))
                 nil t))))
+
+
 
 (defun elfai-stream (system-prompt user-prompt &optional final-callback buffer
                                    position &rest props)
@@ -1224,7 +1263,6 @@ Remaining arguments PROPS are additional properties passed as a plist."
 (defvar-local elfai--bus nil
   "Local variable holding the event bus instance.")
 
-
 (defun elfai-command-watcher ()
   "Monitor `keyboard-quit' commands and handle GPT documentation aborts."
   (cond ((and elfai--request-url-buffers
@@ -1247,6 +1285,48 @@ Remaining arguments PROPS are additional properties passed as a plist."
                     (elfai--update-status msg 'warning t)
                     (message msg))))))
         (elfai--bus (setq elfai--bus nil))))
+
+;;;###autoload
+(define-minor-mode elfai-mode
+  "Enable AI-assisted text generation and image handling in Org-mode buffers.
+
+Enable enhanced language model interactions by providing key bindings and hooks
+for sending buffer content to an AI model.
+
+Activate Org mode if not already active, and set up Org link parameters for
+image handling. Customize the header line to display model information and
+interactive buttons. Manage state restoration and saving through hooks, and
+handle AI model requests with customizable parameters."
+  :lighter " elfai"
+  :global nil
+  :keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c RET") #'elfai-send)
+    map)
+  (cond (elfai-mode
+         (add-hook 'org-font-lock-hook #'elfai--restore-state nil t)
+         (unless (derived-mode-p 'org-mode)
+           (org-mode))
+         (when (and (fboundp 'org-link-set-parameters)
+                    (fboundp 'org-link-complete-file))
+           (org-link-set-parameters
+            "elfai-image"
+            :complete #'elfai--read-image-from-multi-sources
+            :follow #'org-link-open-as-file)
+           (org-link-set-parameters
+            "elfai-img-relative"
+            :complete (lambda (&rest _)
+                        (elfai--read-image-from-multi-sources '(16)))
+            :follow #'org-link-open-as-file))
+         (add-hook 'before-save-hook #'elfai--save-state nil t)
+         (setq elfai-old-header-line header-line-format)
+         (setq header-line-format (elfai-get-header-line)))
+        (t
+         (remove-hook 'before-save-hook #'elfai--save-state t)
+         (setq header-line-format elfai-old-header-line)
+         (setq elfai-old-header-line nil))))
+
+(put 'elfai-mode 'permanent-local t)
 
 ;;;###autoload
 (defun elfai-ask-and-insert (str)
@@ -1302,7 +1382,10 @@ the part of the buffer before the point."
         (prompt
          (cdr elfai-complete-prompt)))
     (elfai--debug 'complete "`%s" gpt-content)
-    (elfai-stream prompt gpt-content)))
+    (elfai-stream prompt gpt-content nil nil nil
+                  :inhibit-status t
+                  :text-props-indicator '(elfai-completion response
+                                          rear-nonsticky t))))
 
 ;;;###autoload
 (defun elfai-complete-with-partial-context ()
@@ -1413,7 +1496,7 @@ Optional argument ON-SUCCESS is a function called with FILENAME as an argument
 if the image is downloaded successfully.
 
 Optional argument ON-ERROR is a function called with an error message if the
-download fails. It defaults to `minibuffer-message'.
+download fails. It defaults to `message'.
 
 Optional argument FINALLY is a function called after the download attempt,
 regardless of its success or failure."
@@ -1440,7 +1523,7 @@ regardless of its success or failure."
                                     'parents))
                   (unwind-protect
                       (if-let ((err (elfai--retrieve-error status)))
-                          (funcall (or on-error #'minibuffer-message) err)
+                          (funcall (or on-error #'message) err)
                         (delete-region
                          (point-min)
                          (progn
@@ -1527,7 +1610,7 @@ image generation."
               ("Authorization" . ,(format "Bearer %s"
                                    api-key))))
            (url-request-data (encode-coding-string
-                              (json-encode
+                              (elfai--json-encode
                                (elfai--plist-remove-nils
                                 (list
                                  :prompt prompt
@@ -1551,7 +1634,7 @@ Argument CALLBACK is a function to be called with the fetched images."
   (if-let ((err
             (elfai--retrieve-error
              status)))
-      (minibuffer-message err)
+      (message err)
     (goto-char url-http-end-of-headers)
     (let* ((response
             (elfai--json-read-buffer 'alist
@@ -1577,7 +1660,7 @@ Argument CALLBACK is a function to be called with the fetched images."
 
 Argument PROMPT is a string used as the input prompt for generating images.
 
-Optional argument COUNT is the number of images to generate; it defaults to 1."
+Optional argument COUNT is the number of images to generate; it defaults to 10."
   (interactive (list (or (read-string "Prompt: "
                                       (when (and (region-active-p)
                                                  (use-region-p))
@@ -1600,6 +1683,43 @@ Optional argument COUNT is the number of images to generate; it defaults to 1."
                                 (1-
                                  count))
          (message "Finished generation of images"))))))
+
+(defun elfai--open-file-extern (file)
+  "Open FILE with the default external application based on the system type.
+
+Argument FILE is the path to the file to be opened."
+  (if (and (eq system-type 'windows-nt)
+           (fboundp 'w32-shell-execute))
+      (w32-shell-execute "open" file)
+    (call-process-shell-command (format "%s %s"
+                                        (pcase system-type
+                                          ('darwin "open")
+                                          ('cygwin "cygstart")
+                                          (_ "xdg-open"))
+                                        (shell-quote-argument (expand-file-name
+                                                               file)))
+                                nil 0)))
+
+(defun elfai--notify-about-file (file &rest params)
+  "Send a notification about a recorded screencast with an option to open it.
+
+Argument FILE is the path to the screencast file.
+
+Remaining arguments PARAMS are additional parameters passed to
+`notifications-notify'."
+  (require 'notifications)
+  (when (fboundp 'notifications-notify)
+    (apply #'notifications-notify
+           :title (format "Image %s ready" (file-name-nondirectory file))
+           :body (format "Click here to open %s" file)
+           :actions `("default" ,(format "Click here to open %s" file))
+           :urgency 'critical
+           :on-action (lambda (_id key)
+                        (pcase key
+                          ("default"
+                           (message "openning")
+                           (find-file-other-window file))))
+           params)))
 
 ;;;###autoload
 (defun elfai-create-image-variation (image-file &optional size callback)
@@ -2092,12 +2212,21 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
                                str pred)))
      #'elfai--minibuffer-preview-file-action)))
 
-(defun elfai--read-image-from-multi-sources (&optional _arg)
-  "Choose a PNG image from multiple sources with minibuffer completion."
-  (elfai--completing-read-from-multi-source
-   '((elfai--completing-read-image)
-     (elfai--read-image-file-name)
-     (elfai--fdfind-completing-read))))
+(defun elfai--read-image-from-multi-sources (&optional arg)
+  "Choose an image from multiple sources with minibuffer completion.
+With optional ARG \\='(16), make the file name relative in the link."
+  (let ((file (elfai--completing-read-from-multi-source
+               '((elfai--completing-read-image)
+                 (elfai--read-image-file-name)
+                 (elfai--fdfind-completing-read)))))
+    (cond ((equal arg '(16))
+           (let ((relative (file-relative-name file
+                                               default-directory)))
+             (unless (or (string-prefix-p "./" relative)
+                         (string-prefix-p "../" relative))
+               (setq relative (concat "./" relative)))
+             relative))
+          (t file))))
 
 (defun elfai--read-image-file-name ()
   "Prompt user to select a PNG image file."
@@ -2594,10 +2723,7 @@ Related Custom Variables:
 - `elfai-image-allowed-file-extensions': List of allowed file extensions for
   image files."
   (interactive)
-  (run-hooks 'elfai-before-parse-buffer-hook)
-  (let ((messages (save-excursion
-                    (elfai--parse-buffer)))
-        (inserter
+  (let ((inserter
          (if (and
               (derived-mode-p 'org-mode)
               (bound-and-true-p org-indent-mode)
@@ -2607,19 +2733,7 @@ Related Custom Variables:
                  (insert it)
                  (org-indent-refresh-maybe beg (point) nil)))
            #'insert))
-        (req-data (list
-                   :model elfai-model
-                   :temperature elfai-temperature
-                   :stream t)))
-    (setq req-data (plist-put req-data :messages
-                              (apply #'vector
-                                     (cons (list
-                                            :role "system"
-                                            :content
-                                            (or
-                                             (elfai-system-prompt)
-                                             ""))
-                                           messages))))
+        (req-data (elfai--get-request-data)))
     (save-excursion
       (elfai--presend)
       (elfai--update-status " Waiting" 'warning t)
@@ -2638,6 +2752,58 @@ Related Custom Variables:
                            60)
                           'error))
        :inserter inserter))))
+
+(defun elfai--get-request-data ()
+  "Run hooks, parse buffer, and return request data with messages."
+  (run-hooks 'elfai-before-parse-buffer-hook)
+  (let ((messages (save-excursion
+                    (elfai--parse-buffer)))
+        (req-data (list
+                   :model elfai-model
+                   :temperature elfai-temperature
+                   :stream t)))
+    (plist-put req-data :messages
+               (apply #'vector
+                      (cons (list
+                             :role "system"
+                             :content
+                             (or
+                              (elfai-system-prompt)
+                              ""))
+                            messages)))))
+
+(defun elfai-inspect-request-data (&optional arg)
+  "Display request data in a buffer, optionally pretty-printing JSON.
+
+Optional argument ARG is a prefix argument used to determine the behavior of the
+function."
+  (interactive "P")
+  (require 'json)
+  (let ((request-data (elfai--get-request-data))
+        (buff-name "*elfai-req-data*"))
+    (if arg
+        (with-current-buffer (get-buffer-create buff-name)
+          (buffer-disable-undo)
+          (fundamental-mode)
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert (elfai--json-encode request-data))
+            (json-pretty-print-buffer))
+          (setq buffer-read-only t)
+          (display-buffer (current-buffer)))
+      (with-output-to-temp-buffer buff-name
+        (let ((inhibit-read-only t)
+              (res (or
+                    (ignore-errors (pp-to-string
+                                    request-data))
+                    (prin1-to-string request-data))))
+          (princ res standard-output)
+          (with-current-buffer standard-output
+            (buffer-disable-undo)
+            (let ((lisp-data-mode-hook nil))
+              (lisp-data-mode)
+              (font-lock-ensure))
+            (setq buffer-read-only t)))))))
 
 
 (defun elfai--get-major-mode (filename)
@@ -3417,44 +3583,6 @@ TEXT will be inserted and `elfai-mode' activated, as well as `org-mode'."
         (set-window-point wnd wind-pos)))
     buffer))
 
-
-;;;###autoload
-(define-minor-mode elfai-mode
-  "Enable AI-assisted text generation and image handling in Org-mode buffers.
-
-Enable enhanced language model interactions by providing key bindings and hooks
-for sending buffer content to an AI model.
-
-Activate Org mode if not already active, and set up Org link parameters for
-image handling. Customize the header line to display model information and
-interactive buttons. Manage state restoration and saving through hooks, and
-handle AI model requests with customizable parameters."
-  :lighter " elfai"
-  :global nil
-  :keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c RET") #'elfai-send)
-    map)
-  (cond (elfai-mode
-         (add-hook 'org-font-lock-hook #'elfai--restore-state nil t)
-         (unless (derived-mode-p 'org-mode)
-           (org-mode))
-         (when (and (fboundp 'org-link-set-parameters)
-                    (fboundp 'org-link-complete-file))
-           (org-link-set-parameters
-            "elfai-image"
-            :complete #'elfai--read-image-from-multi-sources
-            :follow #'org-link-open-as-file))
-         (add-hook 'before-save-hook #'elfai--save-state nil t)
-         (setq elfai-old-header-line header-line-format)
-         (setq header-line-format (elfai-get-header-line)))
-        (t
-         (remove-hook 'before-save-hook #'elfai--save-state t)
-         (setq header-line-format elfai-old-header-line)
-         (setq elfai-old-header-line nil))))
-
-(put 'elfai-mode 'permanent-local t)
-
 (defun elfai--get-other-wind ()
   "Return another window or split sensibly if needed."
   (let ((wind-target
@@ -3868,7 +3996,7 @@ Argument DEST-DIR is the directory where the FILE will be saved."
                       (push item elfai-system-prompt-alist))
                 (setq elfai-curr-prompt-idx
                       (seq-position elfai-system-prompt-alist item))
-                (message "New system prompt added and setted"))))))
+                (message "The new system prompt added and setted"))))))
    :abort-callback (lambda ())))
 
 (transient-define-suffix elfai-edit-system-prompt ()
@@ -3968,6 +4096,12 @@ Argument DEST-DIR is the directory where the FILE will be saved."
    ["Settings"
     ("m" elfai-change-default-model
      :description elfai-model-description)
+    ("i" "Inspect request data" elfai-inspect-request-data)
+    ("I" "Inspect request data as json" (lambda ()
+                                          (interactive)
+                                          (let ((current-prefix-arg '(4)))
+                                            (call-interactively
+                                             #'elfai-inspect-request-data))))
     ("<up>" elfai-increase-temperature)
     ("<down>" elfai-decrease-temperature)]]
   [[:description (lambda ()
