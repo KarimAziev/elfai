@@ -1731,7 +1731,19 @@ Return the category metadatum as the type of the target."
 
 (defvar elfai--minibuffer-targets-finders
   '(elfai--minibuffer-ivy-selected-cand
+    elfai--vertico-selected
     elfai--get-minibuffer-get-default-completion))
+
+(declare-function vertico--candidate "ext:vertico")
+(declare-function vertico--update "ext:vertico")
+
+(defun elfai--vertico-selected ()
+  "Target the currently selected item in Vertico.
+Return the category metadatum as the type of the target."
+  (when (bound-and-true-p vertico--input)
+    (vertico--update)
+    (cons (completion-metadata-get (elfai--minibuffer-get-metadata) 'category)
+          (vertico--candidate))))
 
 (defun elfai--minibuffer-get-current-candidate ()
   "Return cons filename for current completion candidate."
