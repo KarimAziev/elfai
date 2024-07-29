@@ -444,7 +444,7 @@ user-provided commit message fragment to generate a complete commit message."
   :type '(alist
           :key-type string
           :value-type string)
-  :group 'gpt-commit)
+  :group 'elfai)
 
 (defconst elfai-props-indicator '(elfai response rear-nonsticky t))
 
