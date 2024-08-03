@@ -1812,15 +1812,6 @@ Optional argument CALLBACK is a function to be called with the result."
        (completion-metadata-get (elfai--minibuffer-get-metadata) 'category)
        all))))
 
-;; (defun elfai--org-inline-data-image (_protocol link _description)
-;;   "Interpret LINK as base64-encoded image data."
-;;   (base64-decode-string link))
-;; (require 'org)
-
-;; (org-link-set-parameters
-;;  "img"
-;;  :image-data-fun #'elfai--org-inline-data-image)
-
 (defun elfai--get-minibuffer-get-default-completion ()
   "Target the top completion candidate in the minibuffer.
 Return the category metadatum as the type of the target."
