@@ -4025,6 +4025,61 @@ Argument DEST-DIR is the directory where the FILE will be saved."
         (remove (nth elfai-curr-prompt-idx elfai-system-prompt-alist)
                 elfai-system-prompt-alist)))
 
+;;;###autoload
+(defun elfai-edit-response-wrap ()
+  "Edit the response wrap formatting for the Large Language Model chat client.
+
+This command allows to customize the prefix and suffix used to wrap the AI's
+responses. The default prefix and suffix are determined by the customizable
+variables `elfai-response-prefix' and `elfai-response-suffix' respectively.
+
+When invoked, the command presents the current response wrapper format (prefix,
+template placeholder, suffix) for editing. The placeholder `<<%s>>' represents
+the location where the AI's response will be inserted.
+
+After editing, the command updates the `elfai-response-prefix' and
+`elfai-response-suffix' based on the newly provided values. If the new format is
+invalid (i.e., missing the required placeholder), it aborts the update and
+displays an error message.
+
+Example:
+
+If the current `elfai-response-prefix' is \"\\n\\n#+begin_src markdown\\n\" and
+the `elfai-response-suffix' is \"\\n#+end_src\\n\\n\", invoking the command
+would allow to edit a string that looks like this:
+
+   \\n\\n#+begin_src markdown\\n<<%s>>\\n#+end_src\\n\\n
+
+You can modify the prefix and suffix as needed but must retain the `<<%s>>'
+placeholder.
+
+Upon successful editing, the prefix and suffix values will be updated
+accordingly."
+  (interactive)
+  (let ((str (concat elfai-response-prefix
+                     (propertize "<<%s>>" 'face 'font-lock-keyword-face
+                                 'read-only t)
+                     elfai-response-suffix)))
+    (string-edit
+     "Edit the response wrap prefix and suffix. The placeholder `<<%s>>' represents the location where the AI's response will be inserted."
+     str
+     (lambda (edited)
+       (let ((prefix)
+             (suffix))
+         (with-temp-buffer
+           (insert edited)
+           (when-let ((prop (text-property-search-backward 'read-only t t)))
+             (setq suffix (buffer-substring (prop-match-end prop)
+                                            (point-max)))
+             (setq prefix (buffer-substring (point-min)
+                                            (point)))))
+         (if (not (and prefix suffix))
+             (message "Couldn't parse string")
+           (setq elfai-response-prefix prefix)
+           (setq elfai-response-suffix suffix))
+         (message "Updated `elfai-response-prefix' and `elfai-response-suffix'")))
+     :abort-callback (lambda ()))))
+
 (transient-define-suffix elfai-increase-temperature ()
   :description (lambda ()
                  (concat "Increase temperature "
@@ -4117,6 +4172,7 @@ Argument DEST-DIR is the directory where the FILE will be saved."
     ("+" elfai-add-system-prompt)
     ("-" elfai-delete-system-prompt)
     ("e" elfai-edit-system-prompt)
+    ("<" "Edit the response formatting"  elfai-edit-response-wrap)
     ("C-x C-w" "Save prompts"
      (lambda ()
        (interactive)
