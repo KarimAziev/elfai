@@ -63,6 +63,7 @@
 ;; - `elfai-ask-and-insert': Prompt for input and send it to GPT for processing.
 ;; - `elfai-generate-images-batch': Generate a batch of images.
 ;; - `elfai-abort-all': Cancel all pending GPT document requests.
+;; - `elfai-rewrite-text': Rewrite the selected text in region using a grammar correction prompt.
 
 ;;; Code:
 
@@ -249,6 +250,43 @@ placeholder with the exact code or text needed, without any extra formatting or
 annotations."
   :group 'elfai
   :type '(cons string string))
+
+(defcustom elfai-grammar-check-prompt "Check the following text for grammar issues and correct them if any. If the grammar is correct, provide the exact same text."
+  "Prompt for checking and correcting grammar issues in the provided text.
+
+A string used as a prompt for checking and correcting grammar issues
+in a given text. The default prompt instructs to check the text for
+grammar issues and correct them if any, or provide the exact same
+text if the grammar is correct.
+
+This variable is used by the `elfai-rewrite-text' command to set the
+grammar checking prompt."
+  :group 'elfai
+  :type 'string)
+
+(defcustom elfai-grammar-check-delete-region-strategy 'immediately
+  "Strategy for deleting the region when rewriting text.
+
+Determines when to delete the selected region during text rewriting.
+
+Possible values are:
+
+- nil: Never delete the region.
+- `immediately': Delete the region immediately after initiating the rewrite.
+- `after-full-response': Delete the region after the full response is inserted.
+
+This setting affects the behavior of the `elfai-rewrite-text' command
+
+For example, if the value is set to `immediately', the selected region
+where the text is being rewritten will be deleted as soon as the rewrite
+process starts. If set to `after-full-response', the selected region will
+only be deleted after the rewritten text is fully inserted into the buffer."
+  :group 'elfai
+  :type
+  '(radio
+    (const :tag "Never" nil)
+    (const :tag "Immediately" immediately)
+    (const :tag "After the full response is inserted" after-full-response)))
 
 
 (defcustom elfai-debug nil
@@ -4135,12 +4173,70 @@ accordingly."
                       'face
                       'transient-value)))
 
+;;;###autoload
+(defun elfai-rewrite-text (text &optional beg end)
+  "Rewrite the selected TEXT or region using a grammar correction prompt.
+
+The function uses two main variables to control its behavior:
+- `elfai-grammar-check-prompt': This variable sets the prompt text to be used
+  for grammar checking and correction.
+- `elfai-grammar-check-delete-region-strategy': This variable determines when
+  the selected region should be deleted during the rewriting process.
+
+Argument TEXT is the string to be rewritten.
+
+Optional argument BEG is the beginning position of the region.
+
+Optional argument END is the end position of the region.
+
+If the region is active and valid, the text within the region will be
+used for rewriting. If no region is selected, the user will be prompted
+to input the text manually.
+
+Depending on the value of `elfai-grammar-check-delete-region-strategy',
+the selected region can be deleted immediately after initiating the
+rewrite, after the full response is inserted, or not deleted at all."
+  (interactive (pcase-let* ((`(,beg . ,end)
+                             (and (region-active-p)
+                                  (use-region-p)
+                                  (cons (region-beginning)
+                                        (region-end))))
+                            (text (if (and beg end)
+                                      (buffer-substring-no-properties beg end)
+                                    (read-string "The text: "))))
+                 (list text beg end)))
+  (when (and beg end
+             (eq elfai-grammar-check-delete-region-strategy 'immediately))
+    (delete-region beg end))
+  (elfai-stream elfai-grammar-check-prompt text
+                (when (and beg end
+                           (eq elfai-grammar-check-delete-region-strategy
+                               'after-full-response))
+                  (lambda ()
+                    (delete-region beg end)))
+                nil nil
+                :inhibit-status t
+                :text-props-indicator '(elfai-completion response
+                                        rear-nonsticky t)))
+
+(defun elfai--check-grammar-description ()
+  "Return a description for `elfai-rewrite-text' in transient prefix `elfai-menu'."
+  (or
+   (when-let ((reg (elfai-get-region)))
+     (concat
+      "Correct the grammar in the region "
+      "("
+      (propertize (truncate-string-to-width reg 45 nil nil t)
+                  'face 'transient-value)
+      ")"))
+   "Check the grammar and insert text"))
+
 ;;;###autoload (autoload 'elfai-menu "elfai" nil t)
 (transient-define-prefix elfai-menu ()
   "Provide a menu for various AI-powered text and image processing functions."
   :refresh-suffixes t
   [["Actions"
-    ("r" "Start session" elfai)
+    ("s" "Start session" elfai)
     ("h" "Complete at point (send all buffer)" elfai-complete-here
      :inapt-if-non-nil buffer-read-only)
     ("." "Complete (send region before point)"
@@ -4148,10 +4244,13 @@ accordingly."
      :inapt-if-non-nil buffer-read-only)
     ("a" "Ask and insert"
      elfai-ask-and-insert :inapt-if-non-nil buffer-read-only)
+    ("r" elfai-rewrite-text
+     :description elfai--check-grammar-description
+     :inapt-if-non-nil buffer-read-only)
     ("g" "Generate images" elfai-generate-images-batch)
     ""
-    ("b" "change buffer" elfai-switch-to-buffer)]
-   ["Settings"
+    ("b" "change buffer" elfai-switch-to-buffer)]]
+  [["Settings"
     ("m" elfai-change-default-model
      :description elfai-model-description)
     ("i" "Inspect request data" elfai-inspect-request-data)
@@ -4160,9 +4259,9 @@ accordingly."
                                           (let ((current-prefix-arg '(4)))
                                             (call-interactively
                                              #'elfai-inspect-request-data))))
-    ("<up>" elfai-increase-temperature)
-    ("<down>" elfai-decrease-temperature)]]
-  [[:description (lambda ()
+    ([up] elfai-increase-temperature)
+    ([down] elfai-decrease-temperature)]
+   [:description (lambda ()
                    (let ((prompt (car (split-string
                                        (or (elfai-system-prompt) "")
                                        "[\n\r\f]+" t))))

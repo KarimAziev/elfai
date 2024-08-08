@@ -91,6 +91,7 @@ Add the downloaded directory to the load path:
 - =elfai-ask-and-insert=: Prompt for input and send it to GPT for processing.
 - =elfai-generate-images-batch=: Generate a batch of images.
 - =elfai-abort-all=: Cancel all pending GPT document requests.
+- =elfai-rewrite-text=: Rewrite the selected text in region using a grammar correction prompt.
 
 
 * Usage
@@ -162,6 +163,8 @@ To abort all pending GPT document requests, use the command =M-x elfai-abort-all
 - =elfai-image-auto-preview-enabled=: Whether to auto preview image files in completing read.
 - =elfai-system-prompt-alist=: List of predefined system prompts.
 - =elfai-allowed-include-directives=: Alist of allowed include directives for buffer processing.
+- =elfai-grammar-check-prompt=: Prompt for checking and correcting grammar issues in the provided text.
+- =elfai-grammar-check-delete-region-strategy=:  Strategy for deleting the region when rewriting text.
 
 *** Hooks
 
