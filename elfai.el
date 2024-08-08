@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/elfai
 ;; Version: 0.1.0
 ;; Keywords: tools, multimedia
-;; Package-Requires: ((emacs "29.1") (transient "0.7.2"))
+;; Package-Requires: ((emacs "29.1") (transient "0.7.3"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
