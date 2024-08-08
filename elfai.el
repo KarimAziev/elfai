@@ -3635,11 +3635,22 @@ Optional argument PREDICATE is a function to filter buffer names."
      keymap
      predicate)))
 
-(defun elfai-switch-to-buffer ()
-  "Switch to another window displaying a buffer selected via completion."
-  (interactive)
-  (switch-to-buffer-other-window
-   (elfai--read-buffer "Buffer: ")))
+;;;###autoload
+(defun elfai-switch-to-buffer (buffer-or-name &optional other-wind)
+  "Switch to a buffer, enabling `elfai-mode' if not already active.
+
+Argument BUFFER-OR-NAME is the buffer or buffer name to switch to.
+
+Optional argument OTHER-WIND, if non-nil, switches to the buffer in another
+window."
+  (interactive (list (elfai--read-buffer "Buffer: ")
+                     current-prefix-arg))
+  (with-current-buffer (get-buffer-create buffer-or-name)
+    (unless elfai-mode
+      (elfai-mode 1)))
+  (funcall (if other-wind #'switch-to-buffer-other-window
+             #'switch-to-buffer)
+           buffer-or-name))
 
 
 (defun elfai--get-error-from-overlay (ov)
