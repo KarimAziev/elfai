@@ -3652,6 +3652,15 @@ window."
              #'switch-to-buffer)
            buffer-or-name))
 
+;;;###autoload
+(defun elfai-switch-to-buffer-other-window (buffer-or-name)
+  "Switch to a buffer in another window, enabling `elfai-mode' if inactive.
+
+Argument BUFFER-OR-NAME is the buffer or buffer name to switch to."
+  (interactive (list (elfai--read-buffer "Buffer: ")))
+  (let ((current-prefix-arg '(4)))
+    (elfai-switch-to-buffer buffer-or-name current-prefix-arg)))
+
 
 (defun elfai--get-error-from-overlay (ov)
   "Extract error details from an overlay, supporting Flymake and Flycheck.
