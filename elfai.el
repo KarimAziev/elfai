@@ -4216,6 +4216,7 @@ rewrite, after the full response is inserted, or not deleted at all."
                     (delete-region beg end)))
                 nil nil
                 :inhibit-status t
+                :temperature 0.1
                 :text-props-indicator '(elfai-completion response
                                         rear-nonsticky t)))
 
