@@ -4227,7 +4227,7 @@ rewrite, after the full response is inserted, or not deleted at all."
      (concat
       "Correct the grammar in the region "
       "("
-      (propertize (truncate-string-to-width reg 45 nil nil t)
+      (propertize (truncate-string-to-width reg 30 nil nil t)
                   'face 'transient-value)
       ")"))
    "Check the grammar and insert text"))
