@@ -3679,7 +3679,7 @@ Optional argument PREDICATE is a function to filter buffer names."
 
 Argument BUFFER-OR-NAME is the buffer or buffer name to switch to.
 
-Optional argument OTHER-WIND, if non-nil, switches to the buffer in another
+With optional prefix argument OTHER-WIND, switches to the buffer in another
 window."
   (interactive (list (elfai--read-buffer "Buffer: ")
                      current-prefix-arg))
