@@ -875,11 +875,12 @@ aborted."
               (eq req-buff url-buff))
       (when (buffer-live-p req-buff)
         (let ((proc (get-buffer-process req-buff)))
-          (elfai--debug 'process
-                        "process `%S' status `%s'\nlive: `%s'\n process-plist `%S'"
-                        proc (process-status proc)
-                        (process-live-p proc)
-                        (process-plist proc))
+          (when proc
+            (elfai--debug 'process
+                          "process `%S' status `%s'\nlive: `%s'\n process-plist `%S'"
+                          proc (process-status proc)
+                          (process-live-p proc)
+                          (process-plist proc)))
           (when proc
             (delete-process proc))
           (kill-buffer req-buff))))
