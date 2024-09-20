@@ -251,7 +251,7 @@ annotations."
   :group 'elfai
   :type '(cons string string))
 
-(defcustom elfai-grammar-check-prompt "Check the following text for grammar issues and correct them if any. If the grammar is correct, provide the exact same text."
+(defcustom elfai-grammar-check-prompt "Check the following text for grammar issues and correct them if any. IF THE GRAMMAR IS CORRECT, PROVIDE THE EXACT SAME TEXT WITHOUT ANY FORMATTING AND MENTIONS."
   "Prompt for checking and correcting grammar issues in the provided text.
 
 A string used as a prompt for checking and correcting grammar issues
