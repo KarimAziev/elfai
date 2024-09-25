@@ -3681,7 +3681,18 @@ Argument BUFFER is the path to the buffer to preview."
              (split-window-sensibly) wind))
         (pop-to-buffer-same-window buffer)))))
 
-(defun elfai--read-buffer (prompt &optional keymap predicate)
+(defun elfai-minibuffer-preview-buffer ()
+  "Preview the buffer associated with the current minibuffer candidate."
+  (interactive)
+  (elfai--minibuffer-action-no-exit
+   #'elfai--minibuffer-preview-buffer-action))
+
+(defvar elfai-read-buffer-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-j") #'elfai-minibuffer-preview-buffer)
+    map))
+
+(defun elfai--read-buffer (prompt &optional predicate)
   "PROMPT for a buffer name from a list of buffers with `elfai-mode'.
 
 Argument PROMPT is a string used to prompt the user.
@@ -3702,7 +3713,7 @@ Optional argument PREDICATE is a function to filter buffer names."
                                buff-names
                                str pred)))
      #'elfai--minibuffer-preview-buffer-action
-     keymap
+     elfai-read-buffer-map
      predicate)))
 
 ;;;###autoload
