@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/elfai
 ;; Version: 0.1.0
 ;; Keywords: tools, multimedia
-;; Package-Requires: ((emacs "29.1") (transient "0.7.3"))
+;; Package-Requires: ((emacs "29.1"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -308,6 +308,7 @@ If a list, it is a list of the types of messages to be logged."
             :tag "Allow echo message buffer"
             :value 1)
            (const :tag "Parse" parse-buffer)
+           (const :tag "Parse" parse-json)
            (const :tag "Process" process)
            (const :tag "Response" response)
            (symbol :tag "Other"))))
@@ -522,6 +523,28 @@ inserted text, such as syntax highlighting, formatting, or
 further analysis."
   :group 'elfai
   :type 'hook)
+
+(defcustom elfai-grammar-model "gpt-4o"
+  "Default grammar model used for text rewriting and correction.
+
+The model identifier to be used for grammar correction tasks.
+
+This should be a string representing the model name or identifier
+that will be used by the grammar correction function."
+  :group 'elfai
+  :type 'string)
+
+(defcustom elfai-non-stream-models '("o1-preview" "o1-mini")
+  "List of model names that do not support streaming responses.
+
+A list of model names that do not support streaming responses.
+
+Each element in the list should be a string representing the name
+of a model that should be treated as non-streaming. This list is
+used to determine whether a model supports streaming when making
+requests."
+  :group 'elfai
+  :type '(repeat string))
 
 
 (defmacro elfai--json-encode (object)
@@ -938,7 +961,8 @@ Argument RESPONSE is a plist containing the API response data."
   (when-let* ((choices (plist-get response
                                   :choices))
               (choice (elt choices 0))
-              (delta (plist-get choice :delta))
+              (delta (or (plist-get choice :delta)
+                         (plist-get choice :message)))
               (content (plist-get delta :content)))
     (decode-coding-string content 'utf-8)))
 
@@ -1016,8 +1040,6 @@ Argument PLIST is the property list from which KEYS are omitted."
     result))
 
 
-
-
 (defun elfai--parse-request-chunks (info)
   "Parse and insert GPT-generated Emacs Lisp documentation.
 
@@ -1040,96 +1062,86 @@ Argument INFO is a property list containing various request-related data."
               (unless (eolp)
                 (beginning-of-line))
               (let ((errored nil))
-                (when elfai-debug
-                  (setq elfai--debug-data-raw
-                        (append elfai--debug-data-raw
-                                (list
-                                 (list
-                                  (buffer-substring-no-properties
-                                   (point-min)
-                                   (point-max))
-                                  (point))))))
                 (while (and (not errored)
                             (search-forward "data: " nil t))
-                  (let* ((line
-                          (buffer-substring-no-properties
-                           (point)
-                           (line-end-position))))
-                    (if (string= line "[DONE]")
-                        (progn
-                          (when (and (not (plist-get info :done))
-                                     (buffer-live-p buffer))
-                            (plist-put info :done t)
-                            (let ((tracking-marker
-                                   (plist-get info
-                                              :tracking-marker))
-                                  (final-callback
-                                   (plist-get info
-                                              :final-callback))
-                                  (start-marker
-                                   (plist-get info
-                                              :position)))
-                              (with-current-buffer buffer
-                                (let* ((beg
-                                        (when start-marker
-                                          (marker-position start-marker)))
-                                       (end
-                                        (when tracking-marker
-                                          (marker-position tracking-marker)))
-                                       (len (and beg end (- end beg))))
-                                  (save-excursion
-                                    (run-hook-with-args 'after-change-functions
-                                                        beg beg len)
-                                    (syntax-ppss-flush-cache beg)
-                                    (when tracking-marker
-                                      (goto-char tracking-marker))
-                                    (when final-callback
-                                      (funcall final-callback))
-                                    (when start-marker
-                                      (goto-char start-marker))
-                                    (unless (symbol-value 'elfai-mode)
-                                      (elfai--remove-text-props 'elfai
-                                                                elfai-props-indicator)))
-                                  (setq elfai--request-url-buffers
-                                        (assq-delete-all
-                                         (plist-get info :request-buffer)
-                                         elfai--request-url-buffers))
-                                  (when (symbol-value 'elfai-abort-mode)
-                                    (elfai-abort-mode -1))
-                                  (run-hook-with-args
-                                   'elfai-after-full-response-insert-functions
-                                   beg
-                                   end)
-                                  (run-hooks
-                                   'elfai-after-full-response-insert-hook)))))
-                          (set-marker
-                           request-marker
-                           (point)))
-                      (condition-case _err
-                          (let* ((data (elfai--json-parse-string
-                                        line 'plist))
-                                 (err (plist-get data :error)))
-                            (end-of-line)
-                            (set-marker
-                             request-marker
-                             (point))
-                            (if err
-                                (progn
-                                  (setq errored t)
-                                  (when err
-                                    (message "elfai-error: %s"
-                                             (or
-                                              (plist-get err
-                                                         :message)
-                                              err))))
-                              (when callback
-                                (funcall
-                                 callback
-                                 data))))
-                        (error
-                         (setq errored t)
-                         (goto-char
-                          request-marker))))))))))))))
+                  (let ((line
+                         (buffer-substring-no-properties
+                          (point)
+                          (line-end-position))))
+                    (cond ((string= line "[DONE]")
+                           (when (and (not (plist-get info :done))
+                                      (buffer-live-p buffer))
+                             (plist-put info :done t)
+                             (let ((tracking-marker
+                                    (plist-get info
+                                               :tracking-marker))
+                                   (final-callback
+                                    (plist-get info
+                                               :final-callback))
+                                   (start-marker
+                                    (plist-get info
+                                               :position)))
+                               (with-current-buffer buffer
+                                 (let* ((beg
+                                         (when start-marker
+                                           (marker-position start-marker)))
+                                        (end
+                                         (when tracking-marker
+                                           (marker-position tracking-marker)))
+                                        (len (and beg end (- end beg))))
+                                   (save-excursion
+                                     (run-hook-with-args 'after-change-functions
+                                                         beg beg len)
+                                     (syntax-ppss-flush-cache beg)
+                                     (when tracking-marker
+                                       (goto-char tracking-marker))
+                                     (when final-callback
+                                       (funcall final-callback))
+                                     (when start-marker
+                                       (goto-char start-marker))
+                                     (unless (symbol-value 'elfai-mode)
+                                       (elfai--remove-text-props 'elfai
+                                                                 elfai-props-indicator)))
+                                   (setq elfai--request-url-buffers
+                                         (assq-delete-all
+                                          (plist-get info :request-buffer)
+                                          elfai--request-url-buffers))
+                                   (when (symbol-value 'elfai-abort-mode)
+                                     (elfai-abort-mode -1))
+                                   (run-hook-with-args
+                                    'elfai-after-full-response-insert-functions
+                                    beg
+                                    end)
+                                   (run-hooks
+                                    'elfai-after-full-response-insert-hook)))))
+                           (set-marker
+                            request-marker
+                            (point)))
+                          (t (condition-case _err
+                                 (let* ((data (elfai--json-parse-string
+                                               line 'plist))
+                                        (err (plist-get data :error)))
+                                   (end-of-line)
+                                   (set-marker
+                                    request-marker
+                                    (point))
+                                   (if err
+                                       (progn
+                                         (setq errored t)
+                                         (when err
+                                           (message "elfai-error: %s"
+                                                    (or
+                                                     (plist-get err
+                                                                :message)
+                                                     err))))
+                                     (when callback
+                                       (funcall
+                                        callback
+                                        data))))
+                               (error
+                                (setq errored t)
+                                (goto-char
+                                 request-marker)))))))))))))))
 
 (defun elfai--stream-request (request-data &optional final-callback buffer
                                            position &rest props)
@@ -1174,30 +1186,29 @@ Remaining arguments PROPS are additional properties passed as a plist."
                              request-data)
                             'utf-8))
          (request-buffer)
+         (stream (plist-get request-data :stream))
          (typing)
          (callback
           (lambda (response)
             (let ((err (plist-get response :error)))
               (if err
-                  (progn
-                    (let ((msg (or
-                                (plist-get err
-                                           :message)
-                                (format "%s" err))))
-                      (message "elfai-callback err %s" msg)
-                      (when (buffer-live-p buffer)
-                        (when error-cb
-                          (with-current-buffer buffer
-                            (when error-cb
-                              (funcall error-cb err))))
-                        (let ((start-marker
-                               (plist-get info
-                                          :position))
-                              (elfai-props-indicator (or
-                                                      (plist-get info
-                                                                 :text-props-indicator)
-                                                      elfai-props-indicator)))
-                          (elfai--abort-by-marker start-marker)))))
+                  (let ((msg (or
+                              (plist-get err :message)
+                              (format "%s" err))))
+                    (message msg)
+                    (when (buffer-live-p buffer)
+                      (when error-cb
+                        (with-current-buffer buffer
+                          (when error-cb
+                            (funcall error-cb err))))
+                      (let ((start-marker
+                             (plist-get info
+                                        :position))
+                            (elfai-props-indicator (or
+                                                    (plist-get info
+                                                               :text-props-indicator)
+                                                    elfai-props-indicator)))
+                        (elfai--abort-by-marker start-marker))))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (unless (or (plist-get info :inhibit-status) typing)
@@ -1216,8 +1227,19 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                      (err
                                       (elfai--retrieve-error status)))
                                 (if (not err)
-                                    (when (symbol-value 'elfai-abort-mode)
-                                      (elfai-abort-mode -1))
+                                    (progn (when (symbol-value 'elfai-abort-mode)
+                                             (elfai-abort-mode -1))
+                                           (unless stream
+                                             (let ((pl-data
+                                                    (when (boundp 'url-http-end-of-headers)
+                                                      (goto-char url-http-end-of-headers)
+                                                      (ignore-errors
+                                                        (elfai--json-read-buffer 'plist)))))
+                                               (funcall callback pl-data))
+                                             (when (and final-callback
+                                                        (buffer-live-p buffer))
+                                               (with-current-buffer buffer
+                                                 (funcall final-callback)))))
                                   (run-with-timer 0.5 nil #'elfai--abort-by-url-buffer buff)
                                   (message err)
                                   (when (buffer-live-p buffer)
@@ -1229,7 +1251,6 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                            (plist-get info :position))
                                           (elfai-props-indicator (or (plist-get info :text-props-indicator)
                                                                      elfai-props-indicator)))
-                                      (message "elfai-props-indicator 2=`%S'" elfai-props-indicator)
                                       (elfai--abort-by-marker start-marker)))))))
             (error (message "elfai: url-retrieve error `%s'" err))))
     (plist-put info :request-buffer request-buffer)
@@ -1267,23 +1288,29 @@ be inserted. It can be a marker, an integer, or nil. If nil, the current point
 or region end is used.
 
 Remaining arguments PROPS are additional properties passed as a plist."
-  (let ((messages (apply #'vector `((:role "system"
-                                     :content ,(or
-                                                system-prompt
-                                                ""))
-                                    (:role "user"
-                                     :content ,user-prompt)))))
-    (apply #'elfai--stream-request
-           (elfai--plist-merge (list
-                                :messages messages
-                                :model elfai-model
-                                :temperature
-                                elfai-temperature
-                                :stream t)
-                               (elfai--plist-pick
-                                '(:model
-                                  :temperature)
-                                props))
+  (let* ((user-msgs `((:role "user"
+                       :content ,user-prompt)))
+         (model (or (plist-get props :model)
+                    elfai-model))
+         (messages (apply #'vector
+                          (if (member model elfai-non-stream-models)
+                              user-msgs
+                            (append `((:role "system"
+                                       :content ,(or
+                                                  system-prompt
+                                                  "")))
+                                    user-msgs))))
+         (req-data (elfai--plist-merge
+                    (list
+                     :messages messages
+                     :model model
+                     :temperature elfai-temperature
+                     :stream (not (member model elfai-non-stream-models)))
+                    (elfai--plist-pick
+                     '(:model
+                       :temperature)
+                     props))))
+    (apply #'elfai--stream-request req-data
            final-callback buffer
            position
            (elfai--plist-omit
@@ -2759,21 +2786,21 @@ Related Custom Variables:
     (save-excursion
       (elfai--presend)
       (elfai--update-status " Waiting" 'warning t)
-      (elfai--stream-request
-       req-data
-       (lambda ()
-         (elfai--update-status " Ready" 'success))
-       nil
-       nil
-       :error-callback (lambda (err)
-                         (elfai--update-status
-                          (truncate-string-to-width
-                           (format
-                            " Error: %s"
-                            err)
-                           60)
-                          'error))
-       :inserter inserter))))
+      (funcall #'elfai--stream-request
+               req-data
+               (lambda ()
+                 (elfai--update-status " Ready" 'success))
+               nil
+               nil
+               :error-callback (lambda (err)
+                                 (elfai--update-status
+                                  (truncate-string-to-width
+                                   (format
+                                    " Error: %s"
+                                    err)
+                                   (window-width))
+                                  'error))
+               :inserter inserter))))
 
 (defun elfai--get-request-data ()
   "Run hooks, parse buffer, and return request data with messages."
@@ -2784,15 +2811,19 @@ Related Custom Variables:
                    :model elfai-model
                    :temperature elfai-temperature
                    :stream t)))
+    (when (member elfai-model elfai-non-stream-models)
+      (setq req-data (elfai--plist-omit '(:stream) req-data)))
     (plist-put req-data :messages
                (apply #'vector
-                      (cons (list
-                             :role "system"
-                             :content
-                             (or
-                              (elfai-system-prompt)
-                              ""))
-                            messages)))))
+                      (if (member elfai-model elfai-non-stream-models)
+                          messages
+                        (cons (list
+                               :role "system"
+                               :content
+                               (or
+                                (elfai-system-prompt)
+                                ""))
+                              messages))))))
 
 (defun elfai-inspect-request-data (&optional arg)
   "Display request data in a buffer, optionally pretty-printing JSON.
@@ -4217,7 +4248,8 @@ rewrite, after the full response is inserted, or not deleted at all."
                     (delete-region beg end)))
                 nil nil
                 :inhibit-status t
-                :temperature 0.1
+                :temperature 0
+                :model elfai-grammar-model
                 :text-props-indicator '(elfai-completion response
                                         rear-nonsticky t)))
 
