@@ -572,9 +572,6 @@ Argument OBJECT is the Lisp object to be encoded into JSON format."
 (defvar elfai--request-url-buffers nil
   "Alist of active request buffers requests.")
 
-(defvar elfai--debug-data-raw nil
-  "Stores raw data for debugging purposes.")
-
 (defvar auth-sources)
 
 (defvar elfai--multi-source-minibuffer-map
@@ -1305,7 +1302,9 @@ Remaining arguments PROPS are additional properties passed as a plist."
                      :messages messages
                      :model model
                      :temperature elfai-temperature
-                     :stream (not (member model elfai-non-stream-models)))
+                     :stream (if (not (member model elfai-non-stream-models))
+                                 t
+                               nil))
                     (elfai--plist-pick
                      '(:model
                        :temperature)
@@ -3000,24 +2999,6 @@ Argument SYM is the symbol representing the major mode."
 
 (declare-function org-export-expand-include-keyword "ox")
 
-(defun elfai--include-files-with-org-export (content)
-  "Expand included files in Org CONTENT and return result.
-
-Argument CONTENT is a string containing the text with `org-mode' include
-keywords to be expanded."
-  (require 'org)
-  (require 'ox)
-  (with-temp-buffer
-    (let ((tab-width 8))
-      (insert content)
-      (condition-case err
-          (progn (org-export-expand-include-keyword)
-                 (buffer-substring-no-properties
-                  (point-min)
-                  (point-max)))
-        (error (message "Elfai: Couldn't expand #+INCLUDE directive: %s" err)
-               content)))))
-
 (defun elfai--include-files (content)
   "Insert the contents of included files into the buffer at matching directives.
 
@@ -3460,7 +3441,7 @@ Argument CONTENT is the string containing the content to be expanded."
 
 
 (defun elfai--parse-buffer ()
-  "Parse buffer for gpt vision model."
+  "Parse the buffer for `elfai' text properties and return a list of prompt."
   (let ((prompts)
         (prop))
     (while (and
