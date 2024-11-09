@@ -926,7 +926,7 @@ Argument STATUS is a plist containing the status of the HTTP request."
                            'url-http-end-of-headers)
                           url-http-end-of-headers)
                  (goto-char url-http-end-of-headers))
-               (when-let ((err (ignore-errors
+               (when-let* ((err (ignore-errors
                                  (cdr-safe
                                   (assq 'error
                                         (elfai--json-read-buffer
@@ -1003,7 +1003,7 @@ the text properties should be restored."
         (save-excursion
           (elfai-goto-char marker)
           (elfai-restore-text-props))))
-    (when-let ((cell (rassq marker elfai--request-url-buffers)))
+    (when-let* ((cell (rassq marker elfai--request-url-buffers)))
       (setcdr cell nil))))
 
 (defun elfai--plist-merge (plist-a plist-b)
@@ -1579,7 +1579,7 @@ regardless of its success or failure."
                     (make-directory (file-name-directory file)
                                     'parents))
                   (unwind-protect
-                      (if-let ((err (elfai--retrieve-error status)))
+                      (if-let* ((err (elfai--retrieve-error status)))
                           (funcall (or on-error #'message) err)
                         (delete-region
                          (point-min)
@@ -1688,7 +1688,7 @@ image generation."
 Argument STATUS is a plist containing the status of the HTTP request.
 
 Argument CALLBACK is a function to be called with the fetched images."
-  (if-let ((err
+  (if-let* ((err
             (elfai--retrieve-error
              status)))
       (message err)
@@ -1919,7 +1919,7 @@ Return the category metadatum as the type of the target."
     (run-hook-wrapped
      'elfai--minibuffer-targets-finders
      (lambda (fun)
-       (when-let ((result (funcall fun)))
+       (when-let* ((result (funcall fun)))
          (when (and (cdr-safe result)
                     (stringp (cdr-safe result))
                     (not (string-empty-p (cdr-safe result))))
@@ -1954,7 +1954,7 @@ INHERIT-INPUT-METHOD."
                                                (current-local-map))))
                 (use-local-map map)))
             (when preview-action
-              (when-let ((after-change-fn
+              (when-let* ((after-change-fn
                           (pcase elfai-image-auto-preview-enabled
                             ((pred numberp)
                              (lambda (&rest _)
@@ -1998,7 +1998,7 @@ INHERIT-INPUT-METHOD."
                                     (buffer-list))))
     (delete-dups
      (delq nil (mapcar (lambda (buff)
-                         (when-let ((dir (buffer-local-value
+                         (when-let* ((dir (buffer-local-value
                                           'default-directory
                                           buff)))
                            (when (and
@@ -2027,7 +2027,7 @@ Argument FILE is the path to the file to preview."
                           (message
                            "File is too large (%s) for preview "
                            size))))))
-    (if-let ((buff (get-file-buffer
+    (if-let* ((buff (get-file-buffer
                     file)))
         (unless (get-buffer-window
                  buff)
@@ -2362,7 +2362,7 @@ Optional argument PREDICATE, if non-nil, is a function that takes one argument
                                     (message
                                      "File is too large (%s) for preview "
                                      size))))))
-              (if-let ((buff (get-file-buffer
+              (if-let* ((buff (get-file-buffer
                               file)))
                   (unless (get-buffer-window
                            buff)
@@ -2424,7 +2424,7 @@ Optional argument ON-SUCCESS is a function to call with the models list."
                                 (elfai-get-api-key))))))
     (url-retrieve url
                   (lambda (status)
-                    (if-let ((err (elfai--retrieve-error
+                    (if-let* ((err (elfai--retrieve-error
                                    status)))
                         (minibuffer-message "Error while fetching models: %s"
                                             err)
@@ -2497,7 +2497,7 @@ Remaining arguments ARGS are additional arguments passed to `completing-read'."
                             (apply #'max (mapcar
                                           (lambda (it) (length (car it)))
                                           elfai-models-sorted)))))
-                   (when-let ((created
+                   (when-let* ((created
                                (alist-get
                                 'created
                                 (cdr (assoc str elfai-models-sorted)))))
@@ -2528,7 +2528,7 @@ Remaining arguments ARGS are additional arguments passed to `completing-read'."
                            (setq elfai-models-sorted
                                  (elfai--sort-models-by-time
                                   (elfai--normalize-models models)))
-                           (when-let ((wnd (active-minibuffer-window)))
+                           (when-let* ((wnd (active-minibuffer-window)))
                              (with-selected-window wnd
                                (setq text-parts
                                      (elfai--get-minibuffer-text-parts))
@@ -2576,7 +2576,7 @@ Optional argument HIST specifies the history list to use.
 
 Remaining arguments ARGS are additional arguments passed to `completing-read'."
   (let* ((annotf (lambda (str)
-                   (when-let ((sym (intern-soft str)))
+                   (when-let* ((sym (intern-soft str)))
                      (and (custom-variable-p sym)
                           (let ((val (symbol-value sym)))
                             (concat " " (or val "")))))))
@@ -2864,7 +2864,7 @@ function."
 Argument FILENAME is the filename of the file for which to determine the major
 mode."
   (or
-   (when-let ((buff
+   (when-let* ((buff
                (get-file-buffer filename)))
      (buffer-local-value 'major-mode buff))
    (let ((fname (if (file-name-absolute-p filename)
@@ -3003,7 +3003,7 @@ Argument SYM is the symbol representing the major mode."
   "Insert the contents of included files into the buffer at matching directives.
 
 Argument CONTENT is the string containing the text to process."
-  (when-let ((regex (elfai--make-include-directives-regex)))
+  (when-let* ((regex (elfai--make-include-directives-regex)))
     (with-temp-buffer
       (insert content)
       (let ((case-fold-search t))
@@ -3131,7 +3131,7 @@ Argument DIRECTIVE is the string to be normalized."
   "Generate a regex for matching copy directives.
 
 See variable `elfai-allowed-include-directives'"
-  (when-let ((directives (mapcar
+  (when-let* ((directives (mapcar
                           (lambda (it)
                             (let ((trimmed (string-trim it)))
                               (unless (string-prefix-p "#+" trimmed)
@@ -3150,7 +3150,7 @@ See variable `elfai-allowed-include-directives'"
 (defun elfai--make-include-directives-regex ()
   "Return a regex matching allowed include directives.
 See variable `elfai-allowed-include-directives'."
-  (when-let ((directives (mapcar
+  (when-let* ((directives (mapcar
                           (lambda (it)
                             (let ((trimmed (string-trim it)))
                               (unless (string-prefix-p "#+" trimmed)
@@ -3172,7 +3172,7 @@ See variable `elfai-allowed-include-directives'."
 
 (defun elfai-copy-and-replace-include-directives ()
   "Copy files referenced by include directives to a specified directory."
-  (when-let ((regex (elfai--make-copy-directives-regex)))
+  (when-let* ((regex (elfai--make-copy-directives-regex)))
     (let (prop)
       (save-excursion
         (while (and
@@ -3227,7 +3227,7 @@ See variable `elfai-allowed-include-directives'."
   "Retrieve marked files from the active `dired-mode' buffer."
   (require 'dired)
   (when (fboundp 'dired-get-marked-files)
-    (when-let ((buff (seq-find (lambda
+    (when-let* ((buff (seq-find (lambda
                                  (buff)
                                  (and (eq (buffer-local-value 'major-mode buff)
                                           'dired-mode)
@@ -4133,7 +4133,7 @@ accordingly."
              (suffix))
          (with-temp-buffer
            (insert edited)
-           (when-let ((prop (text-property-search-backward 'read-only t t)))
+           (when-let* ((prop (text-property-search-backward 'read-only t t)))
              (setq suffix (buffer-substring (prop-match-end prop)
                                             (point-max)))
              (setq prefix (buffer-substring (point-min)
@@ -4248,7 +4248,7 @@ rewrite, after the full response is inserted, or not deleted at all."
 (defun elfai--check-grammar-description ()
   "Return a description for `elfai-rewrite-text' in transient prefix `elfai-menu'."
   (or
-   (when-let ((reg (elfai-get-region)))
+   (when-let* ((reg (elfai-get-region)))
      (concat
       "Correct the grammar in the region "
       "("
