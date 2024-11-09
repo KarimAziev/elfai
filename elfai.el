@@ -594,9 +594,9 @@ By default, the value of `elfai-gpt-url' is used as URL."
                             :secret)))
     (pcase secret
       ((pred not)
-       (user-error (format "No `elfai-api-key' found in the auth source.
-Your auth-sources %s should contain such entry:
-machine %s password TOKEN" auth-sources host)))
+       (user-error "No `elfai-api-key' found in the auth source.
+Your auth-sources '%s' should contain such entry:
+machine %s password TOKEN" auth-sources host))
       ((pred functionp)
        (encode-coding-string (funcall secret) 'utf-8))
       (_ secret))))
@@ -1689,8 +1689,8 @@ Argument STATUS is a plist containing the status of the HTTP request.
 
 Argument CALLBACK is a function to be called with the fetched images."
   (if-let* ((err
-            (elfai--retrieve-error
-             status)))
+             (elfai--retrieve-error
+              status)))
       (message err)
     (goto-char url-http-end-of-headers)
     (let* ((response
@@ -1705,11 +1705,10 @@ Argument CALLBACK is a function to be called with the fetched images."
                                 (if (functionp callback)
                                     (funcall callback files)
                                   (message
-                                   (format
-                                    "Fetched %s"
-                                    (string-join
-                                     files
-                                     ",\s")))))))))
+                                   "Fetched %s"
+                                   (string-join
+                                    files
+                                    ",\s"))))))))
 
 ;;;###autoload
 (defun elfai-generate-images-batch (prompt &optional count)
