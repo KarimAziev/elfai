@@ -2826,8 +2826,8 @@ Related Custom Variables:
 (defun elfai-inspect-request-data (&optional arg)
   "Display request data in a buffer, optionally pretty-printing JSON.
 
-Optional argument ARG is a prefix argument used to determine the behavior of the
-function."
+Optional argument ARG is a prefix argument that, when provided, triggers a
+different displaying output data as JSON."
   (interactive "P")
   (require 'json)
   (let ((request-data (elfai--get-request-data))
@@ -2855,6 +2855,13 @@ function."
               (lisp-data-mode)
               (font-lock-ensure))
             (setq buffer-read-only t)))))))
+
+(defun elfai-inspect-request-data-as-json ()
+  "Display request data in a buffer as JSON."
+  (interactive)
+  (let ((current-prefix-arg '(4)))
+    (call-interactively
+     #'elfai-inspect-request-data)))
 
 
 (defun elfai--get-major-mode (filename)
@@ -4256,10 +4263,15 @@ rewrite, after the full response is inserted, or not deleted at all."
       ")"))
    "Check the grammar and insert text"))
 
+(defun elfai-save-system-prompt-alist ()
+  "Save the current `elfai-system-prompt-alist' to the customization file."
+  (interactive)
+  (customize-save-variable 'elfai-system-prompt-alist
+                           elfai-system-prompt-alist))
+
 ;;;###autoload (autoload 'elfai-menu "elfai" nil t)
 (transient-define-prefix elfai-menu ()
   "Provide a menu for various AI-powered text and image processing functions."
-  :refresh-suffixes t
   [["Actions"
     ("s" "Start session" elfai)
     ("h" "Complete at point (send all buffer)" elfai-complete-here
@@ -4279,11 +4291,7 @@ rewrite, after the full response is inserted, or not deleted at all."
     ("m" elfai-change-default-model
      :description elfai-model-description)
     ("i" "Inspect request data" elfai-inspect-request-data)
-    ("I" "Inspect request data as json" (lambda ()
-                                          (interactive)
-                                          (let ((current-prefix-arg '(4)))
-                                            (call-interactively
-                                             #'elfai-inspect-request-data))))
+    ("I" "Inspect request data as json" elfai-inspect-request-data-as-json)
     ([up] elfai-increase-temperature)
     ([down] elfai-decrease-temperature)]
    [:description (lambda ()
@@ -4300,11 +4308,7 @@ rewrite, after the full response is inserted, or not deleted at all."
     ("-" elfai-delete-system-prompt)
     ("e" elfai-edit-system-prompt)
     ("<" "Edit the response formatting"  elfai-edit-response-wrap)
-    ("C-x C-w" "Save prompts"
-     (lambda ()
-       (interactive)
-       (customize-save-variable 'elfai-system-prompt-alist
-                                elfai-system-prompt-alist))
+    ("C-x C-w" "Save prompts" elfai-save-system-prompt-alist
      :transient t)]])
 
 
