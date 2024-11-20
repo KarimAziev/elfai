@@ -2229,19 +2229,20 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
   (let* ((dirs (append (elfai--get-active-directories)
                        (elfai-get-xdg-dirs)))
          (files (elfai--files-to-sorted-alist
-                 (mapcan
-                  (lambda (dir)
-                    (directory-files
-                     dir t
-                     (concat "\\."
-                             (regexp-opt
-                              elfai-image-allowed-file-extensions)
-                             "\\'")))
-                  (if (member (expand-file-name elfai-images-dir) dirs)
-                      dirs
-                    (seq-filter
-                     #'file-exists-p
-                     (nconc dirs (list elfai-images-dir)))))))
+                 (delete-dups
+                  (mapcan
+                   (lambda (dir)
+                     (directory-files
+                      dir t
+                      (concat "\\."
+                              (regexp-opt
+                               elfai-image-allowed-file-extensions)
+                              "\\'")))
+                   (if (member (expand-file-name elfai-images-dir) dirs)
+                       dirs
+                     (seq-filter
+                      #'file-exists-p
+                      (nconc dirs (list elfai-images-dir))))))))
          (annotf
           (lambda (file)
             (concat (propertize " " 'display (list 'space :align-to 80))
