@@ -387,6 +387,38 @@ to a language name for use in the directive."
   :group 'elfai
   :type 'string)
 
+(defcustom elfai-response-chunks-replacement-alist '((" " . " ") ; a wide whitespace character (U+2003)
+                                                     ;; a Unicode hyphen (U+2010 HYPHEN)
+                                                     ("‐" . "-")
+                                                     ;; a non-breaking hyphen (U+2011)
+                                                     ("‑" . "-")
+                                                     ;; a narrow space U+2005
+                                                     (" " . " ")
+                                                     ;; hyphen (U+2010)
+                                                     ("-" . "-")
+                                                     ;; non-breaking hyphen (U+2011)
+                                                     ("-" . "-")
+                                                     ;; figure dash (U+2012)
+                                                     ("‒" . "-")
+                                                     ;; en dash (U+2013)
+                                                     ("–" . "-")
+                                                     ;; em dash (U+2014)
+                                                     ("—" . "-")
+                                                     ;; minus sign (U+2212)
+                                                     ("−" . "-"))
+  "An alist used to define replacement patterns for processing text chunks.
+
+Each element is a cons cell where the car is a regular expression (regexp) and
+the cdr is a string used as the replacement.
+
+When processing a text chunk, each regexp in the alist is applied
+sequentially, and matches are replaced with the corresponding
+replacement string."
+  :group 'elfai
+  :type '(alist
+          :key-type (regexp :tag "Regexp")
+          :value-type (string :tag "Replacement")))
+
 
 (defcustom elfai-temperature 1.0
   "The temperature for the OpenAI GPT model used.
@@ -1013,9 +1045,21 @@ information."
             (set-marker-insertion-type tracking-marker t)
             (plist-put info :tracking-marker tracking-marker))
           (goto-char tracking-marker)
-          (add-text-properties 0 (length response) text-props response)
-          (funcall (or inserter #'insert) response)
-          (run-hooks 'elfai-stream-after-insert-hook))))))
+          (let ((response-str (elfai--process-response-chunk response)))
+            (add-text-properties 0 (length response-str) text-props response-str)
+            (funcall (or inserter #'insert) response-str)
+            (run-hooks 'elfai-stream-after-insert-hook)))))))
+
+
+(defun elfai--process-response-chunk (chunk)
+  "Replace patterns in CHUNK using `elfai-response-chunks-replacement-alist'.
+
+Argument CHUNK is a string that represents the text to be processed."
+  (seq-reduce (lambda (acc it)
+                (setq acc (replace-regexp-in-string (car it)
+                                                    (cdr it)
+                                                    acc)))
+              elfai-response-chunks-replacement-alist chunk))
 
 
 (defun elfai--abort-by-marker (marker)
