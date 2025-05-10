@@ -348,6 +348,34 @@ with that method.
                      (const identity))
           :value-type (repeat :tag "Directive" string)))
 
+(defcustom elfai-org-src-example-block-modes '(fundamental-mode
+                                               text-mode)
+  "List of major modes that should be treated as org example blocks.
+
+When generating include directives (see `elfai-allowed-include-directives') for
+files, if the file's major mode is not in this list, the mode will be converted
+to a language name for use in the directive."
+  :group 'elfai
+  :type
+  '(repeat
+    (symbol :completions
+     (lambda
+       (string pred
+        action)
+       (let ((completion-ignore-case
+              t))
+        (complete-with-action
+         action
+         (remove
+          't
+          (seq-uniq
+           (seq-filter
+            #'symbolp
+            (flatten-list
+             auto-mode-alist))))
+         string
+         pred))))))
+
 (defcustom elfai-gpt-url "https://api.openai.com/v1/chat/completions"
   "The URL to the OpenAI GPT API endpoint for chat completions."
   :group 'elfai
@@ -3286,17 +3314,18 @@ See also `elfai-allowed-include-directives'."
                                                               (elfai--normalize-directive
                                                                it)))
                                   (delete-dups
-                                   (seq-reduce (lambda (acc it)
-                                                 (setq acc (append acc (cdr it))))
-                                               elfai-allowed-include-directives
-                                               '()))))))
+                                   (seq-reduce
+                                    (lambda (acc it)
+                                      (setq acc (append acc (cdr it))))
+                                    elfai-allowed-include-directives
+                                    '()))))))
   (let* ((files (elfai--get-files-dwim))
          (str (mapconcat
                (apply-partially
                 #'elfai--file-path-as-include-directive
                 (elfai--normalize-directive directive))
                files
-               "\n\n")))
+               "\n")))
     (kill-new str)
     (message "Copied content of %s files" (length files))
     str))
@@ -3339,6 +3368,7 @@ copy as #+INCLUDE directives."
     (elfai-copy-files-paths-as-include-directives
      (cadar elfai-allowed-include-directives))))
 
+
 (defun elfai--file-path-as-include-directive (directive file)
   "Return a string with an include directive and the path to FILE.
 
@@ -3356,15 +3386,20 @@ Argument FILE is the path to the file whose content is to be included."
                      (expand-file-name file)
                      (length (expand-file-name proj)))
                   (abbreviate-file-name file)))
+         (mode (elfai--get-major-mode file))
+         (lang
+          (unless (memq mode elfai-org-src-example-block-modes)
+            (elfai--major-mode-to-lang-name mode)))
          (content
-          (concat
-           (format "%s %s" directive (prin1-to-string file))
-           " "
-           "EXAMPLE")))
+          (string-trim (concat
+                        (format "%s %s" directive (prin1-to-string file))
+                        " "
+                        (if lang "SRC" "EXAMPLE")
+                        " "
+                        lang))))
     (concat "- " title "\n"
-            "\n"
             content
-            "\n\n")))
+            "\n")))
 
 (defun elfai--format-file-path-as-link (file)
   "Format FILE as an Org-mode link with its project-relative or abbreviated path.
