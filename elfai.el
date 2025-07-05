@@ -394,6 +394,7 @@ to a language name for use in the directive."
                                                      ("‑" . "-")
                                                      ;; a narrow space U+2005
                                                      (" " . " ")
+                                                     (" " . " ")
                                                      ;; hyphen (U+2010)
                                                      ("-" . "-")
                                                      ;; non-breaking hyphen (U+2011)
