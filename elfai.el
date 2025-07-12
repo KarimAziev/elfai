@@ -4373,8 +4373,8 @@ rewrite, after the full response is inserted, or not deleted at all."
      :description elfai-model-description)
     ("i" "Inspect request data" elfai-inspect-request-data)
     ("I" "Inspect request data as json" elfai-inspect-request-data-as-json)
-    ([up] elfai-increase-temperature)
-    ([down] elfai-decrease-temperature)]
+    ("<up>" elfai-increase-temperature)
+    ("<down>" elfai-decrease-temperature)]
    [:description (lambda ()
                    (let ((prompt (car (split-string
                                        (or (elfai-system-prompt) "")
