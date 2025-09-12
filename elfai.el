@@ -1241,7 +1241,23 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                     :final-callback final-callback
                                     :position start-marker)
                                    props))
-         (error-cb (plist-get info :error-callback))
+         (error-handler (lambda (err)
+                          (let ((error-cb (plist-get info :error-callback)))
+                            (message (car (split-string err nil t)))
+                            (when (buffer-live-p buffer)
+                              (when error-cb
+                                (with-current-buffer buffer
+                                  (when error-cb
+                                    (funcall error-cb err))))
+                              (let ((start-marker
+                                     (plist-get info
+                                                :position))
+                                    (elfai-props-indicator
+                                     (or
+                                      (plist-get info
+                                                 :text-props-indicator)
+                                      elfai-props-indicator)))
+                                (elfai--abort-by-marker start-marker))))))
          (url-request-extra-headers `(("Authorization" .
                                        ,(encode-coding-string
                                          (string-join
@@ -1251,10 +1267,27 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                          'utf-8))
                                       ("Content-Type" . "application/json")))
          (url-request-method "POST")
-         (url-request-data (encode-coding-string
-                            (elfai--json-encode
-                             request-data)
-                            'utf-8))
+         (url-request-data (condition-case err
+                               (encode-coding-string
+                                (elfai--json-encode
+                                 request-data)
+                                'utf-8)
+                             (wrong-type-argument
+                              (let ((err-msg (if (listp err)
+                                                 (mapconcat (apply-partially
+                                                             #'format "%s")
+                                                            (append
+                                                             (list
+                                                              "Failed to encode request data: ")
+                                                             (seq-take-while
+                                                              #'symbolp err))
+                                                            " ")
+                                               (format "%s" err))))
+                                (funcall error-handler err-msg)
+                                (error
+                                 "Failed to encode request data: Wrong type argument")))
+                             (error (funcall error-handler err)
+                                    (error "Failed to encode request data"))))
          (request-buffer)
          (stream (plist-get request-data :stream))
          (typing)
@@ -1262,23 +1295,9 @@ Remaining arguments PROPS are additional properties passed as a plist."
           (lambda (response)
             (let ((err (plist-get response :error)))
               (if err
-                  (let ((msg (or
-                              (plist-get err :message)
-                              (format "%s" err))))
-                    (message msg)
-                    (when (buffer-live-p buffer)
-                      (when error-cb
-                        (with-current-buffer buffer
-                          (when error-cb
-                            (funcall error-cb err))))
-                      (let ((start-marker
-                             (plist-get info
-                                        :position))
-                            (elfai-props-indicator (or
-                                                    (plist-get info
-                                                               :text-props-indicator)
-                                                    elfai-props-indicator)))
-                        (elfai--abort-by-marker start-marker))))
+                  (funcall error-handler (or
+                                          (plist-get err :message)
+                                          (format "%s" err)))
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (unless (or (plist-get info :inhibit-status) typing)
@@ -1312,16 +1331,7 @@ Remaining arguments PROPS are additional properties passed as a plist."
                                                  (funcall final-callback)))))
                                   (run-with-timer 0.5 nil #'elfai--abort-by-url-buffer buff)
                                   (message err)
-                                  (when (buffer-live-p buffer)
-                                    (when (and error-cb (buffer-live-p buffer))
-                                      (with-current-buffer buffer
-                                        (when error-cb
-                                          (funcall error-cb err))))
-                                    (let ((start-marker
-                                           (plist-get info :position))
-                                          (elfai-props-indicator (or (plist-get info :text-props-indicator)
-                                                                     elfai-props-indicator)))
-                                      (elfai--abort-by-marker start-marker)))))))
+                                  (funcall error-handler err)))))
             (error (message "elfai: url-retrieve error `%s'" err))))
     (plist-put info :request-buffer request-buffer)
     (push (cons request-buffer start-marker)
@@ -2865,13 +2875,19 @@ Related Custom Variables:
                nil
                nil
                :error-callback (lambda (err)
-                                 (elfai--update-status
-                                  (truncate-string-to-width
-                                   (format
-                                    " Error: %s"
-                                    err)
-                                   (window-width))
-                                  'error))
+                                 (let ((errmsg (format "%s"err)))
+                                   (elfai--update-status
+                                    (truncate-string-to-width
+                                     (let ((case-fold-search t))
+                                       (if (string-match-p
+                                            "^\\(failed\\|error\\|invalid\\)"
+                                            errmsg)
+                                           errmsg
+                                         (format
+                                          " Error: %s"
+                                          errmsg)))
+                                     (window-width))
+                                    'error)))
                :inserter inserter))))
 
 (defun elfai--get-request-data ()
