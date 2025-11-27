@@ -457,7 +457,7 @@ images."
   :type '(radio
           (directory :tag "Directory")
           (function-item read-directory-name)
-          (function :tag "Function that directory")))
+          (function :tag "Function that returns a directory")))
 
 (defcustom elfai-user-prompt-prefix "* "
   "Prefix for user prompts in elfai interactions.
@@ -1460,6 +1460,7 @@ handle AI model requests with customizable parameters."
             :follow #'org-link-open-as-file))
          (add-hook 'before-save-hook #'elfai--save-state nil t)
          (setq elfai-old-header-line header-line-format)
+         (setq-local org-element-use-cache nil)
          (setq header-line-format (elfai-get-header-line)))
         (t
          (remove-hook 'before-save-hook #'elfai--save-state t)
@@ -2307,10 +2308,42 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
                               (expand-file-name "user-dirs.dirs"
                                                 (xdg-config-home))))))))
 
+(defun elfai-get-macos-dirs ()
+  "Return a list of common user directories on macOS as absolute paths.
+Returns nil on non-macOS systems or if `osascript' is not available.
+Paths have no trailing slash."
+  (when-let* ((osascript (and (eq system-type 'darwin)
+                              (executable-find "osascript"))))
+    (let ((tokens '("desktop" "documents" "downloads" "pictures" "music"
+                    "movies" "home")))
+      (cl-loop for tok in tokens
+               for applescript = (format "POSIX path of (path to %s folder)"
+                                         tok)
+               for out =
+               (let ((s (shell-command-to-string
+                         (concat "osascript -e " (shell-quote-argument
+                                                  applescript)))))
+                 (replace-regexp-in-string "[\r\n]+\\'" "" s))
+               when (and out (not (string-empty-p out)))
+               collect out))))
+
 (defun elfai--completing-read-image ()
   "Choose an image file with completion and preview."
-  (let* ((dirs (append (elfai--get-active-directories)
-                       (elfai-get-xdg-dirs)))
+  (let* ((dirs
+          (seq-filter #'file-accessible-directory-p
+                      (delq nil
+                            (delete-dups
+                             (append
+                              (elfai--get-active-directories)
+                              (elfai-get-macos-dirs)
+                              (elfai-get-xdg-dirs)
+                              (list
+                               (cond ((stringp elfai-images-dir)
+                                      elfai-images-dir)
+                                     ((eq elfai-images-dir 'read-directory-name)
+                                      nil)
+                                     ((functionp elfai-images-dir)
+                                      (funcall elfai-images-dir)))))))))
          (files (elfai--files-to-sorted-alist
                  (delete-dups
                   (mapcan
@@ -2321,11 +2354,7 @@ Argument PROMPT is a string displayed as the prompt in the minibuffer."
                               (regexp-opt
                                elfai-image-allowed-file-extensions)
                               "\\'")))
-                   (if (member (expand-file-name elfai-images-dir) dirs)
-                       dirs
-                     (seq-filter
-                      #'file-exists-p
-                      (nconc dirs (list elfai-images-dir))))))))
+                   dirs))))
          (annotf
           (lambda (file)
             (concat (propertize " " 'display (list 'space :align-to 80))
