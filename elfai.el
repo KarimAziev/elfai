@@ -216,7 +216,8 @@ based on your requirements."
   :group 'elfai
   :type '(repeat string))
 
-(defcustom elfai-image-allowed-file-extensions '("png" "jpg" "jpeg" "gif" "webp")
+(defcustom elfai-image-allowed-file-extensions '("png" "jpg" "jpeg" "gif" "webp"
+                                                 "svg")
   "List of allowed file extensions for image files.
 
 A list of allowed file extensions for image files.
