@@ -3762,11 +3762,12 @@ TEXT will be inserted and `elfai-mode' activated, as well as `org-mode'."
                   (split-window-sensibly)
                   wind)))
            (let ((wind (selected-window)))
-             (or
-              (window-right wind)
-              (window-left wind)
-              (split-window-sensibly)
-              wind)))))
+             (or (seq-find #'window-live-p (list
+                                            (window-right wind)
+                                            (window-left wind)))
+                 (seq-find #'window-live-p (list
+                                            (split-window-sensibly)
+                                            wind)))))))
     wind-target))
 
 (defun elfai--get-elfai-buffers ()
