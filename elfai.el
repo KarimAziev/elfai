@@ -2345,16 +2345,16 @@ Paths have no trailing slash."
                                       nil)
                                      ((functionp elfai-images-dir)
                                       (funcall elfai-images-dir)))))))))
+         (re (concat "\\."
+                     (regexp-opt elfai-image-allowed-file-extensions)
+                     "\\'"))
          (files (elfai--files-to-sorted-alist
                  (delete-dups
                   (mapcan
                    (lambda (dir)
                      (directory-files
                       dir t
-                      (concat "\\."
-                              (regexp-opt
-                               elfai-image-allowed-file-extensions)
-                              "\\'")))
+                      re))
                    dirs))))
          (annotf
           (lambda (file)
