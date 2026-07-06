@@ -460,6 +460,18 @@ images."
           (function-item read-directory-name)
           (function :tag "Function that returns a directory")))
 
+(defcustom elfai-images-directories nil
+  "List of directories to search for image files.
+
+List of directories searched for image files during image selection.
+
+Each element must be a directory name, written as a string.
+
+Only accessible directories are used, and files are matched against
+the allowed image file extensions."
+  :group 'elfai
+  :type '(repeat (directory :format "%v")))
+
 (defcustom elfai-user-prompt-prefix "* "
   "Prefix for user prompts in elfai interactions.
 
@@ -2328,34 +2340,52 @@ Paths have no trailing slash."
                when (and out (not (string-empty-p out)))
                collect out))))
 
+
+(defun elfai--directories-files (dirs &optional re)
+  "Return a flat list of readable files in DIRS matching RE.
+
+DIRS is a list of directory names to scan.
+
+RE is an optional regular expression used to filter file names.
+It defaults to nil."
+  (let ((result)
+        (visited))
+    (while dirs
+      (when-let* ((dir (car dirs))
+                  (dir (file-truename (file-name-as-directory dir)))
+                  (files
+                   (when (and
+                          (not (member dir visited))
+                          (push dir visited)
+                          (file-accessible-directory-p dir)
+                          (file-readable-p dir))
+                     (directory-files dir t re))))
+        (setq result (nconc result files)))
+      (setq dirs (cdr dirs)))
+    result))
+
+(defun elfai--image-files ()
+  "Return allowed image files from active, common, and configured directories."
+  (elfai--directories-files
+   (append
+    (elfai--get-active-directories)
+    (elfai-get-macos-dirs)
+    (elfai-get-xdg-dirs)
+    elfai-images-directories
+    (list
+     (cond ((stringp elfai-images-dir)
+            elfai-images-dir)
+           ((eq elfai-images-dir 'read-directory-name)
+            nil)
+           ((functionp elfai-images-dir)
+            (funcall elfai-images-dir)))))
+   (concat "\\."
+           (regexp-opt elfai-image-allowed-file-extensions)
+           "\\'")))
+
 (defun elfai--completing-read-image ()
   "Choose an image file with completion and preview."
-  (let* ((dirs
-          (seq-filter #'file-accessible-directory-p
-                      (delq nil
-                            (delete-dups
-                             (append
-                              (elfai--get-active-directories)
-                              (elfai-get-macos-dirs)
-                              (elfai-get-xdg-dirs)
-                              (list
-                               (cond ((stringp elfai-images-dir)
-                                      elfai-images-dir)
-                                     ((eq elfai-images-dir 'read-directory-name)
-                                      nil)
-                                     ((functionp elfai-images-dir)
-                                      (funcall elfai-images-dir)))))))))
-         (re (concat "\\."
-                     (regexp-opt elfai-image-allowed-file-extensions)
-                     "\\'"))
-         (files (elfai--files-to-sorted-alist
-                 (delete-dups
-                  (mapcan
-                   (lambda (dir)
-                     (directory-files
-                      dir t
-                      re))
-                   dirs))))
+  (let* ((files (elfai--files-to-sorted-alist (elfai--image-files)))
          (annotf
           (lambda (file)
             (concat (propertize " " 'display (list 'space :align-to 80))
