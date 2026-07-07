@@ -2081,27 +2081,26 @@ INHERIT-INPUT-METHOD."
                        require-match initial-input hist
                        def inherit-input-method))))
 
+
 (defun elfai--get-active-directories ()
-  "Return directories of buffers displayed in windows, prioritizing current."
-  (let* ((curr-buf (current-buffer))
-         (live-buffers (seq-sort-by (lambda (it)
-                                      (if (get-buffer-window it)
-                                          (if (eq curr-buf it)
-                                              1
-                                            2)
-                                        -1))
-                                    #'>
-                                    (buffer-list))))
-    (delete-dups
-     (delq nil (mapcar (lambda (buff)
-                         (when-let* ((dir (buffer-local-value
-                                          'default-directory
-                                          buff)))
-                           (when (and
-                                  (not (file-remote-p dir))
-                                  (file-accessible-directory-p dir))
-                             (expand-file-name dir))))
-                       live-buffers)))))
+  "Return accessible local directories from live buffers, without duplicates.
+Prioritizes current buffer and buffers visible in windows."
+  (let* ((curr (current-buffer))
+         (wins (delq nil (mapcar #'window-buffer (window-list nil 'nomini))))
+         (priority (delete-dups (cons curr wins)))
+         (all (buffer-list))
+         (seen (make-hash-table :test #'equal))
+         (res nil))
+    (dolist (buf (append priority all))
+      (when (buffer-live-p buf)
+        (let ((dir (buffer-local-value 'default-directory buf)))
+          (unless (gethash dir seen)
+            (puthash dir t seen)
+            (when (and (not (file-remote-p dir))
+                       (file-accessible-directory-p dir))
+              (push dir res))))))
+    (nreverse res)))
+
 
 (defun elfai--minibuffer-preview-file-action (file)
   "Preview a FILE in the minibuffer if conditions are met.
@@ -2340,6 +2339,7 @@ Paths have no trailing slash."
                when (and out (not (string-empty-p out)))
                collect out))))
 
+(defvar elfai--unreadable-dirs (make-hash-table :test #'equal))
 
 (defun elfai--directories-files (dirs &optional re)
   "Return a flat list of readable files in DIRS matching RE.
@@ -2348,21 +2348,25 @@ DIRS is a list of directory names to scan.
 
 RE is an optional regular expression used to filter file names.
 It defaults to nil."
-  (let ((result)
-        (visited))
+  (let ((seen (make-hash-table :test #'equal))
+        (result))
     (while dirs
       (when-let* ((dir (car dirs))
-                  (dir (file-truename (file-name-as-directory dir)))
+                  (dir (file-name-as-directory dir))
                   (files
                    (when (and
-                          (not (member dir visited))
-                          (push dir visited)
+                          (not (gethash dir seen))
+                          (puthash dir t seen)
+                          (not (gethash dir elfai--unreadable-dirs))
                           (file-accessible-directory-p dir)
-                          (file-readable-p dir))
+                          (or (file-readable-p dir)
+                              (and (puthash dir t elfai--unreadable-dirs)
+                                   nil)))
                      (directory-files dir t re))))
-        (setq result (nconc result files)))
+        (dolist (f files)
+          (push f result)))
       (setq dirs (cdr dirs)))
-    result))
+    (nreverse result)))
 
 (defun elfai--image-files ()
   "Return allowed image files from active, common, and configured directories."
