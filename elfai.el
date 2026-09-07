@@ -2349,6 +2349,7 @@ DIRS is a list of directory names to scan.
 RE is an optional regular expression used to filter file names.
 It defaults to nil."
   (let ((seen (make-hash-table :test #'equal))
+        (files-seen (make-hash-table :test #'equal))
         (result))
     (while dirs
       (when-let* ((dir (car dirs))
@@ -2364,7 +2365,9 @@ It defaults to nil."
                                    nil)))
                      (directory-files dir t re))))
         (dolist (f files)
-          (push f result)))
+          (unless (hash-table-contains-p f files-seen)
+            (push f result))
+          (puthash f t files-seen)))
       (setq dirs (cdr dirs)))
     (nreverse result)))
 
